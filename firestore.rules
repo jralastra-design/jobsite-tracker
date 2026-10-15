@@ -1,0 +1,85 @@
+rules_version = '2';
+
+// Jobsite Material Tracker — access rules.
+// Roles (users/{uid}.role): admin, pm (foreman / project manager), counter (field), viewer.
+// A person sees a project when they are an admin, the project is in their users/{uid}.projects list,
+// or they created it. Everything below is enforced on the server, whatever the app shows.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // The one email allowed to create itself as the first admin. Change it here if the owner changes.
+    function ownerEmail() { return 'OWNER_EMAIL_PLACEHOLDER'; }
+
+    function signedIn() { return request.auth != null; }
+    function verified() { return signedIn() && request.auth.token.email_verified == true; }
+    function authEmail() { return request.auth.token.email.lower(); }
+    function userPath() { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function me() { return get(userPath()).data; }
+    function isActive() { return verified() && exists(userPath()) && me().active == true; }
+    function role() { return me().role; }
+    function isAdmin() { return isActive() && role() == 'admin'; }
+    function isManager() { return isActive() && role() in ['admin', 'pm']; }
+    function project(pid) { return get(/databases/$(database)/documents/projects/$(pid)).data; }
+    function canProject(pid) {
+      return isActive() && (role() == 'admin' || pid in me().projects || project(pid).createdBy == request.auth.uid);
+    }
+    function canManage(pid) { return canProject(pid) && role() in ['admin', 'pm']; }
+    function canField(pid) { return canProject(pid) && role() in ['admin', 'pm', 'counter']; }
+    function isOpen(pid) { return project(pid).get('closed', false) != true; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function voidOnly() { return changed().hasOnly(['void']); }
+    function invitePath() { return /databases/$(database)/documents/invites/$(authEmail()); }
+
+    match /users/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if verified() && request.auth.uid == uid
+        && request.resource.data.email == authEmail()
+        && request.resource.data.active == true
+        && request.resource.data.projects is list
+        && (
+          (authEmail() == ownerEmail() && request.resource.data.role == 'admin')
+          || (exists(invitePath())
+              && request.resource.data.role == get(invitePath()).data.role
+              && request.resource.data.projects == get(invitePath()).data.projects)
+        );
+      allow update: if isAdmin()
+        || (request.auth.uid == uid && isActive() && changed().hasOnly(['name', 'lastSeen']));
+      allow delete: if isAdmin();
+    }
+
+    match /invites/{email} {
+      allow get: if isAdmin() || (verified() && authEmail() == email);
+      allow list, write: if isAdmin();
+    }
+
+    match /audit/{id} {
+      allow create: if isActive() && request.resource.data.uid == request.auth.uid;
+      allow read, delete: if isAdmin();
+    }
+
+    match /projects/{pid} {
+      allow get: if canProject(pid);
+      allow list: if isAdmin() || (isManager() && resource.data.createdBy == request.auth.uid);
+      allow create: if isManager() && request.resource.data.createdBy == request.auth.uid;
+      allow update: if canManage(pid);
+      allow delete: if isAdmin();
+
+      match /{coll}/{doc} {
+        allow read: if canProject(pid);
+        allow create: if isOpen(pid) && request.resource.data.createdBy == request.auth.uid && (
+          (coll in ['counts', 'production', 'usage', 'deliveries'] && canField(pid))
+          || (coll in ['items', 'groups', 'orders'] && canManage(pid))
+        );
+        allow update: if isOpen(pid) && coll in ['counts', 'production', 'usage', 'deliveries', 'items', 'groups', 'orders'] && (
+          canManage(pid)
+          || (coll in ['counts', 'production', 'usage', 'deliveries'] && canField(pid)
+              && resource.data.createdBy == request.auth.uid && voidOnly())
+        );
+        // Hard deletes are cleanup work: admins only, open or closed jobs.
+        allow delete: if isAdmin();
+      }
+    }
+  }
+}
