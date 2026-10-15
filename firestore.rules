@@ -9,7 +9,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // The one email allowed to create itself as the first admin. Change it here if the owner changes.
-    function ownerEmail() { return 'OWNER_EMAIL_PLACEHOLDER'; }
+    function ownerEmail() { return 'jralastra@gmail.com'; }
 
     function signedIn() { return request.auth != null; }
     function verified() { return signedIn() && request.auth.token.email_verified == true; }

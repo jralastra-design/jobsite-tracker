@@ -6,7 +6,7 @@ import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, query, 
 
 const OWNER = 'owner@example.com';
 let env;
-const rules = readFileSync('firestore.rules', 'utf8').replace('OWNER_EMAIL_PLACEHOLDER', OWNER);
+const rules = readFileSync('firestore.rules', 'utf8').replace('jralastra@gmail.com', OWNER);
 const tok = (email, verified = true) => ({ email, email_verified: verified });
 const as = (uid, email, verified = true) => env.authenticatedContext(uid, tok(email, verified)).firestore();
 
