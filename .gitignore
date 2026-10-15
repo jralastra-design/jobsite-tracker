@@ -4,3 +4,4 @@ dist/
 .firebase/
 firebase-debug.log*
 firestore-debug.log*
+test-output.tap

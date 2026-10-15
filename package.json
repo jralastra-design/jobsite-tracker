@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-tracker \"node --test tests/\""
+    "test:rules": "firebase emulators:exec --only firestore --project demo-tracker \"node --test --test-reporter=tap tests/rules.test.mjs > test-output.tap 2>&1; s=$?; cat test-output.tap; exit $s\""
   },
   "dependencies": {
     "firebase": "12.19.0"
