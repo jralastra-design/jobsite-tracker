@@ -10,3 +10,5 @@ for (let i = 0; i < t.length; i++) {
   console.log(`::error title=Rules test failed: ${m[1].replace(/[\r\n:]/g, ' ')}::${detail.replace(/[\r\n]/g, ' ').slice(0, 900)}`);
 }
 if (!fails && !/^# pass/m.test(t.join('\n'))) console.log('::error title=Rules tests did not run::' + t.slice(-30).join(' ').replace(/[\r\n]/g, ' ').slice(-900));
+const pass = (t.join('\n').match(/^# pass (\d+)/m) || [])[1], fail = (t.join('\n').match(/^# fail (\d+)/m) || [])[1];
+console.log(`::notice title=Rules tests::${pass ?? '?'} passed, ${fail ?? '?'} failed`);

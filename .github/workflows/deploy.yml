@@ -21,7 +21,7 @@ jobs:
         with: { distribution: temurin, java-version: 21 }
       - run: npm ci
       - run: npm run test:rules
-      - if: failure()
+      - if: always()
         run: test -f test-output.tap && node tests/annotate.mjs test-output.tap || echo "::error title=Emulator did not start::See the test:rules step"
   build:
     runs-on: ubuntu-latest
