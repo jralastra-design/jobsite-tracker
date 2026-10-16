@@ -104,3 +104,10 @@ test('invites and audit are admin-only to read', async () => {
   await assertFails(getDocs(collection(as('ctr', 'ctr@x.com'), 'audit')));
   await assertFails(setDoc(doc(as('ctr', 'ctr@x.com'), 'audit/a2'), { uid: 'pm', action: 'x' }));
 });
+
+test('admin import: project first, then its entries', async () => {
+  const a = as('admin', OWNER);
+  await assertSucceeds(setDoc(doc(a, 'projects/IMP'), { number: 'IMP', createdBy: 'admin', closed: false }));
+  await assertSucceeds(setDoc(doc(a, 'projects/IMP/items/i1'), { name: 'x', createdBy: 'admin' }));
+  await assertSucceeds(setDoc(doc(a, 'projects/IMP/counts/c1'), { qty: { i1: 3 }, createdBy: 'admin' }));
+});

@@ -310,10 +310,15 @@ export async function adminAct(a, el, app) {
       try {
         for (const p of j.projects) {
           if (existing.has(p.id)) { skipped++; continue; }
-          const ops = [{ type: 'set', ref: doc(fs, 'projects/' + p.id), data: { ...p.data, sample: false, createdBy: app.UID, createdAt: serverTimestamp(), importedFrom: j.source || 'export' } }];
-          for (const [c, docs] of Object.entries(p.collections || {})) { if (!COLS.includes(c)) continue; for (const d of docs) ops.push({ type: 'set', ref: doc(fs, `projects/${p.id}/${c}/${d.id}`), data: { ...d.data, createdBy: d.data.createdBy || app.UID, createdAt: serverTimestamp() } }); }
-          ops.push(audit('import job', 'projects/' + p.id, `${ops.length - 1} entries`));
-          await commitAll(ops); done++;
+          // The project must exist (and be open) before its entries are written: the security rules check it.
+          const wasClosed = p.data.closed === true;
+          await commitAll([{ type: 'set', ref: doc(fs, 'projects/' + p.id), data: { ...p.data, closed: false, sample: false, createdBy: app.UID, createdAt: serverTimestamp(), importedFrom: j.source || 'export' } }]);
+          const ops = [];
+          for (const [c, docs] of Object.entries(p.collections || {})) { if (!COLS.includes(c)) continue; for (const d of docs) { const { createdBy: orig, createdAt: _x, ...rest } = d.data; ops.push({ type: 'set', ref: doc(fs, `projects/${p.id}/${c}/${d.id}`), data: { ...rest, ...(orig && orig !== app.UID ? { originalCreatedBy: orig } : {}), createdBy: app.UID, createdAt: serverTimestamp() } }); } }
+          ops.push(audit('import job', 'projects/' + p.id, `${ops.length} entries`));
+          await commitAll(ops);
+          if (wasClosed) await commitAll([{ type: 'update', ref: doc(fs, 'projects/' + p.id), data: { closed: true } }]);
+          done++;
         }
         app.toast(`Imported ${done} job${done === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} already here` : ''}`);
         A.importText = null; A.importInfo = '';
