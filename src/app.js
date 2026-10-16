@@ -224,6 +224,7 @@ function vStatus(M){
   return h;
 }
 function prodCard(G){
+  const lastDay = G.dayList[G.dayList.length-1];
   const u = esc(G.g.unit||'units');
   const pts = G.dayList.slice(-14);
   let spark = '';
@@ -241,11 +242,12 @@ function prodCard(G){
     <div class="spread"><div><div class="eyebrow">Production</div><h2 style="font-size:22px">${esc(G.g.name)}</h2></div>
     ${can.field&&!proj()?.closed?'<button class="btn sm primary" data-act="tab" data-tab="log">Log today</button>':''}</div>
     <div class="prod">
-      <div><div class="v">${fmt(G.avg5)}</div><div class="k">${u}/day, last ${Math.min(5,G.dayList.length)} days</div></div>
-      <div><div class="v">${fmt(G.total)}</div><div class="k">${u} since first count · ${G.days} days</div></div>
+      <div><div class="v">${fmt(lastDay?lastDay[1]:null)}</div><div class="k">${u} laid ${lastDay?fDate(lastDay[0]):'—'}</div></div>
+      <div><div class="v">${fmt(G.total)}</div><div class="k">${u} total logged · ${G.days} day${G.days===1?'':'s'}</div></div>
+      <div><div class="v">${fmt(G.avg5)}</div><div class="k">avg ${u}/day${G.dayList.length>1?`, last ${Math.min(5,G.dayList.length)} days`:''}</div></div>
       <div><div class="v">${fmt(G.remaining)}</div><div class="k">${u} left${G.daysLeft!=null?` · ~${Math.ceil(G.daysLeft)} work days`:''}</div></div>
     </div>${spark}
-    <div class="small muted">${G.last?`Last entry ${fDate(G.last.at)} · ${fmt(num(G.last.qty))} ${u}`:'No production logged yet.'} Drives ${G.prim.length} primary and ${G.secondary.length} secondary materials by takeoff ratio.</div>
+    <div class="small muted">${G.last?'':'No production logged yet. '}Drives ${G.prim.length} primary and ${G.secondary.length} secondary materials by takeoff ratio.</div>
   </section>`;
 }
 function catsOf(items){ const seen=[]; for(const r of items){ const c=r.it.cat||'Other'; if(!seen.includes(c)) seen.push(c);} return seen; }
