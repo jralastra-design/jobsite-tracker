@@ -114,7 +114,8 @@ function model(){
   for(const x of base){
     x.gid = gIds.has(x.it.group) && (x.it.role==='primary'||x.it.role==='secondary') ? x.it.group : null;
     x.auto = x.gid && gTot[x.gid] && x.net!=null ? x.net/gTot[x.gid] : null;
-    x.ratio = x.gid ? (has(x.it.ratio) ? num(x.it.ratio) : x.auto) : null;
+    x.est = x.it.estimate !== false;
+    x.ratio = x.gid && x.est ? (has(x.it.ratio) ? num(x.it.ratio) : x.auto) : null;
   }
 
   const prodSum = (gid,a,b) => prod.reduce((s,e)=> e.groupId===gid && inWin(e.at,a,b) ? s+num(e.qty) : s, 0);
@@ -148,7 +149,8 @@ function model(){
     const after = flows(it.id, L.at, null), since = flows(it.id, O.at, null);
     r.expAfter = r.ratio!=null ? prodSum(r.gid, L.at, null)*r.ratio : 0;
     r.onHandCount = L.q + after.net - after.waste;
-    r.onHand = r.onHandCount - r.expAfter;
+    r.onHand = r.onHandCount;                       // counts, deliveries and logged waste only
+    r.onHandEst = r.ratio!=null ? r.onHandCount - r.expAfter : null; // also minus production × ratio since last count
     r.recvAfter = after.net; r.wasteAfter = after.waste;
     const pre = r.pre ?? 0;
     r.delivered = pre + O.q + since.net;
@@ -255,10 +257,10 @@ function itemRow(r){
   const ohW = tot && r.counted ? Math.max(0,Math.min(100-insW, r.onHand/tot*100)) : 0;
   const mix = r.flag ? `<span class="chip warn" title="Actual vs production-based use">Mix ${spct(r.all.varPct)}</span>` : '';
   return `<button class="item" data-act="item" data-id="${esc(r.it.id)}">
-    <div class="spread"><div style="min-width:0"><div class="name">${esc(r.it.name)}</div><div class="meta">${esc(itemMeta(r.it))}${r.lastAt?` · counted ${fDate(r.lastAt)}`:''}${r.it.role==='primary'?' · primary':r.it.role==='secondary'?' · by ratio':''}</div></div><span class="chips">${mix}<span class="chip ${cls}">${label}</span></span></div>
+    <div class="spread"><div style="min-width:0"><div class="name">${esc(r.it.name)}</div><div class="meta">${esc(itemMeta(r.it))}${r.lastAt?` · counted ${fDate(r.lastAt)}`:''}${r.gid?(r.it.role==='primary'?' · primary':' · secondary')+(r.est?'':' · not estimated'):''}</div></div><span class="chips">${mix}<span class="chip ${cls}">${label}</span></span></div>
     <div class="bar" role="img" aria-label="${fmt(r.installed)} installed, ${fmt(r.onHand)} on hand of ${fmt(r.gross)} required"><i class="ins" style="width:${insW}%"></i><i class="oh" style="left:${insW}%;width:${ohW}%"></i></div>
     <div class="nums">
-      <div><div class="k">On hand${r.expAfter>=1?' (est.)':''}</div><div class="v">${fmt(r.onHand)}</div></div>
+      <div><div class="k">On hand</div><div class="v">${fmt(r.onHand)}</div></div>
       <div><div class="k">To deliver</div><div class="v">${fmt(r.balDeliver)}</div></div>
       <div><div class="k">To install</div><div class="v">${fmt(r.balInstall)}</div></div>
     </div></button>`;
@@ -333,14 +335,14 @@ function vCount(M){
       <label class="f">Counted by<input id="cBy" value="${esc(d.by)}" placeholder="Name" autocomplete="name"></label>
     </div>
     <label class="f">Note<input id="cNote" value="${esc(d.note)}" placeholder="e.g. Level 3 stockpile + laydown yard"></label>
-    <div class="small muted">Count everything physically on site. Leave a material blank to skip it; it keeps its last count. The estimate shown is last count + deliveries − waste − production use since.</div>
+    <div class="small muted">Count everything physically on site. Leave a material blank to skip it; it keeps its last count. “Expected” is the last count plus deliveries since, minus logged waste. Production isn't used.</div>
   </div>`;
   for(const cat of catsOf(M.items)){
     h += `<section class="group"><h2>${esc(cat)}</h2><div class="list">`;
     for(const r of M.items.filter(x=>(x.it.cat||'Other')===cat)){
       const v = d.qty[r.it.id] ?? '';
       h += `<div class="countrow"><div style="min-width:0"><div style="font-weight:600">${esc(r.it.name)}</div>
-        <div class="small muted">${r.counted?`Last ${fmt(r.lastQty)} · ${fDate(r.lastAt)} · est. now ${fmt(r.onHand)}`:'First count'}</div>
+        <div class="small muted">${r.counted?`Last ${fmt(r.lastQty)} · ${fDate(r.lastAt)}${r.onHand!==r.lastQty?` · expected ${fmt(r.onHand)}`:''}`:'First count'}</div>
         <div class="conv" data-conv="${esc(r.it.id)}">${conv(r, v)}</div></div>
         <input type="number" inputmode="numeric" min="0" step="1" id="q-${esc(r.it.id)}" data-qty="${esc(r.it.id)}" value="${esc(v)}" placeholder="${esc(r.it.unit||'EA')}" aria-label="${esc(r.it.name)} count"></div>`;
     }
@@ -400,9 +402,9 @@ function vReports(M){
   const ST=M.ST;
   let h = `<div class="panel pad"><div class="eyebrow">Material status as of ${fDate(today())}</div>
     <p class="small muted" style="margin:6px 0 0">${ST.wasteOn?`Waste allowance on (takeoff entered as ${ST.basis==='net'?'net, waste added':'gross, waste included'}). Required net is what goes in the wall; required incl. waste is what has to be delivered.`:'Waste allowance off. Required quantities are used as entered.'}</p></div>`;
-  h += `<div class="tablewrap"><table><thead><tr><th>Material</th><th>Req net</th>${ST.wasteOn?'<th>Req + waste</th>':''}<th>Deliv'd</th><th>Inst'd (count)</th><th>Inst'd (prod)</th><th>On hand</th><th>To deliv</th><th>To inst</th><th>% inst</th><th>On order</th></tr></thead><tbody>`;
+  h += `<div class="tablewrap"><table><thead><tr><th>Material</th><th>Req net</th>${ST.wasteOn?'<th>Req + waste</th>':''}<th>Deliv'd</th><th>Inst'd (count)</th><th>Inst'd (prod)</th><th>On hand</th><th>On hand est. (prod)</th><th>To deliv</th><th>To inst</th><th>% inst</th><th>On order</th></tr></thead><tbody>`;
   for(const r of M.items){
-    h += `<tr><td>${esc(r.it.name)}</td><td>${fmt(r.net)}</td>${ST.wasteOn?`<td>${fmt(r.gross)}</td>`:''}<td>${fmt(r.delivered)}</td><td>${fmt(r.installed)}</td><td>${fmt(r.installedProd)}</td><td>${fmt(r.onHand)}</td>
+    h += `<tr><td>${esc(r.it.name)}</td><td>${fmt(r.net)}</td>${ST.wasteOn?`<td>${fmt(r.gross)}</td>`:''}<td>${fmt(r.delivered)}</td><td>${fmt(r.installed)}</td><td>${fmt(r.installedProd)}</td><td>${fmt(r.onHand)}</td><td>${fmt(r.onHandEst)}</td>
       <td class="${r.balDeliver<0?'neg':''}">${fmt(r.balDeliver)}</td><td class="${r.balInstall<0?'neg':''}">${fmt(r.balInstall)}</td>
       <td>${r.pct!=null&&r.counted?Math.round(r.pct*100)+'%':'—'}</td><td>${fmt(r.onOrder||0)}</td></tr>`;
   }
@@ -535,7 +537,8 @@ function sheetItem(id){
     ${r.installedProd!=null?`<dt>Installed (production × ${ratioTxt(r.ratio)})</dt><dd>${fmt(r.installedProd)}</dd>`:''}
     <dt>Logged waste since opening</dt><dd>${fmt(r.wasteTotal)}</dd>
     <dt>On hand at last count</dt><dd>${fmt(r.lastQty)}</dd>
-    <dt>On hand now (est.)</dt><dd>${fmt(r.onHand)}</dd>
+    <dt>On hand now (last count + deliveries − waste)</dt><dd>${fmt(r.onHand)}</dd>
+    ${r.onHandEst!=null&&Math.round(r.expAfter)>0?`<dt class="sub">Production estimate (− ${fmt(r.expAfter)} by ratio since last count)</dt><dd class="muted">${fmt(r.onHandEst)}</dd>`:''}
     <div class="hr"></div>
     <dt><b>Balance to deliver</b></dt><dd>${fmt(r.balDeliver)}${lf(r.balDeliver)}</dd>
     <dt><b>Balance to install</b> (counts)</dt><dd>${fmt(r.balInstall)}</dd>
@@ -584,7 +587,8 @@ function sheetGroup(id){
   const g = id ? S.groups.find(x=>x.id===id) : null;
   groupDraft = { id:id||null, name:g?.name||'Block laid', unit:g?.unit||'block', sfEntry:g?g.sfEntry!==false:true, perSF:g?.perSF??1.125,
     roles: Object.fromEntries(S.items.map(it=>[it.id, it.group===id && id ? (it.role||'') : ''])),
-    ratios: Object.fromEntries(S.items.map(it=>[it.id, it.group===id && id && has(it.ratio) ? String(it.ratio) : ''])) };
+    ratios: Object.fromEntries(S.items.map(it=>[it.id, it.group===id && id && has(it.ratio) ? String(it.ratio) : ''])),
+    est: Object.fromEntries(S.items.map(it=>[it.id, it.estimate !== false])) };
   drawGroup();
 }
 function drawGroup(){
@@ -597,10 +601,10 @@ function drawGroup(){
   <label class="check"><input type="checkbox" id="gSF" ${d.sfEntry?'checked':''}> Allow entry by wall square footage</label>
   <label class="f">Units per SF (CMU 1.125 · modular brick 6.75)<input id="gPer" type="number" inputmode="decimal" min="0" step="0.005" value="${esc(d.perSF)}"></label>
   <div class="eyebrow">Materials in this group</div>
-  <div class="small muted">Primary = counted in the daily total. Secondary = estimated from it. Auto ratio is the material's net takeoff ÷ total primary takeoff (${fmt(tot)}). Type a ratio to override it.</div>
+  <div class="small muted">Primary = counted in the daily total. Secondary = estimated from it. Auto ratio is the material's net takeoff ÷ total primary takeoff (${fmt(tot)}). Type a ratio to override it. Untick <b>Estimate from production</b> for pieces used unevenly (halves, knock-outs, accessories): they stay in the group but production never estimates their use, and they get no mix flag.</div>
   <div class="colhead"><span style="text-align:left">Material</span><span>Role</span><span>Ratio</span></div>
   <div class="list">${M.items.map(r=>{ const role=d.roles[r.it.id]||''; const auto = role && tot && r.net!=null ? r.net/tot : null; const o=others(r.it.id);
-    return `<div class="countrow two"><div style="min-width:0"><div style="font-weight:600">${esc(r.it.name)}</div><div class="small muted">${o?`Now in “${esc(o)}” · `:''}Takeoff ${fmt(r.net)}${role?` · auto ${ratioTxt(auto)}`:''}</div></div>
+    return `<div class="countrow two"><div style="min-width:0"><div style="font-weight:600">${esc(r.it.name)}</div><div class="small muted">${o?`Now in “${esc(o)}” · `:''}Takeoff ${fmt(r.net)}${role?` · auto ${ratioTxt(auto)}`:''}</div>${role?`<label class="small" style="display:flex;align-items:center;gap:6px;margin-top:4px"><input type="checkbox" data-gest="${esc(r.it.id)}" ${d.est[r.it.id]!==false?'checked':''} style="width:18px;height:18px;accent-color:var(--accent)"> Estimate from production</label>`:''}</div>
     <select data-grole="${esc(r.it.id)}" aria-label="${esc(r.it.name)} role"><option value="" ${!role?'selected':''}>—</option><option value="primary" ${role==='primary'?'selected':''}>Primary</option><option value="secondary" ${role==='secondary'?'selected':''}>Secondary</option></select>
     <input type="number" inputmode="decimal" min="0" step="any" data-gratio="${esc(r.it.id)}" value="${esc(d.ratios[r.it.id])}" placeholder="${role?ratioTxt(auto):''}" ${role?'':'disabled'} aria-label="${esc(r.it.name)} ratio override" style="font-size:15px"></div>`; }).join('')}</div>
   <div class="row"><button class="btn primary" data-act="saveGroup">Save group</button>${d.id?confirmBtn('delGroup', d.id, 'Remove group'):''}</div>`, drawGroup);
@@ -609,6 +613,7 @@ function syncGroupDraft(){
   const d=groupDraft; if(!d) return; const g=x=>document.getElementById(x);
   if(g('gName')){ d.name=g('gName').value.trim(); d.unit=g('gUnit').value.trim(); d.sfEntry=g('gSF').checked; d.perSF=g('gPer').value; }
   document.querySelectorAll('[data-grole]').forEach(el=>{ d.roles[el.dataset.grole]=el.value; });
+  document.querySelectorAll('[data-gest]').forEach(el=>{ d.est[el.dataset.gest]=el.checked; });
   document.querySelectorAll('[data-gratio]').forEach(el=>{ d.ratios[el.dataset.gratio]=el.value; });
 }
 
@@ -632,6 +637,7 @@ function drawOrder(){
     <label class="f">Qty<input type="number" inputmode="numeric" min="0" data-oline="${i}" data-k="qty" value="${esc(l.qty)}"></label>
     <button class="btn sm" data-act="rmLine" data-i="${i}" aria-label="Remove line">✕</button></div>`).join('')}
   <button class="linkbtn" data-act="addLine">+ Add line</button>
+  ${newMatForm('order')}
   <button class="btn primary" data-act="saveOrder">Save order</button>`, drawOrder);
 }
 function syncOrderDraft(){
@@ -640,20 +646,44 @@ function syncOrderDraft(){
   document.querySelectorAll('[data-oline]').forEach(el=>{ d.lines[+el.dataset.oline][el.dataset.k]=el.value; });
 }
 
-let recvOrder=null;
-function sheetReceive(orderId){
+let recvOrder=null, recvExtra=[];
+function newMatForm(ctx){
+  if(!can.manage) return '';
+  if(S.newMat!==ctx) return `<button class="linkbtn" data-act="nmOpen" data-ctx="${ctx}">+ New material not on the list</button>`;
+  return `<div class="panel pad stack" style="background:var(--sunk)"><div class="eyebrow">New material</div>
+    <label class="f">Name<input id="nmName" placeholder='e.g. 8" Bond Beam CMU'></label>
+    <div class="grid2"><label class="f">Category<select id="nmCat">${CATS.map(c=>`<option>${c}</option>`).join('')}</select></label>
+    <label class="f">Unit<select id="nmUnit">${['EA','LF','SF','BAG','PAL','CY','TON'].map(u=>`<option>${u}</option>`).join('')}</select></label></div>
+    <div class="grid2"><label class="f">Bar size (rebar)<select id="nmBar"><option value="">—</option>${Object.keys(WT).map(b=>`<option>${b}</option>`).join('')}</select></label>
+    <label class="f">Piece length<input id="nmLen" placeholder="20'-0&quot;"></label></div>
+    <div class="small muted">Added to this job's materials with no takeoff quantity. Set the quantity, and its production group if any, in Setup later.</div>
+    <div class="row"><button class="btn primary sm" data-act="nmSave" data-ctx="${ctx}">Add material</button><button class="btn sm" data-act="nmCancel" data-ctx="${ctx}">Cancel</button></div></div>`;
+}
+function captureRecv(){
+  const g=x=>document.getElementById(x); const k={recv:{}, rej:{}};
+  if(g('rDate')){ k.date=g('rDate').value; k.ticket=g('rTicket').value; }
+  document.querySelectorAll('[data-recv]').forEach(i=>{ if(i.value!=='') k.recv[i.dataset.recv]=i.value; });
+  document.querySelectorAll('[data-rej]').forEach(i=>{ if(i.value!=='') k.rej[i.dataset.rej]=i.value; });
+  return k;
+}
+function sheetReceive(orderId, keep){
   const M=model(); const o = orderId ? M.orders.find(x=>x.id===orderId) : null;
+  if(!keep){ recvExtra=[]; S.newMat=null; }
   recvOrder = orderId||null;
-  const pre = {}; if(o) for(const l of o.lines) if(l.rem>0) pre[l.itemId]=String(l.rem);
-  const rows = o ? M.items.filter(r=>o.lines.some(l=>l.itemId===r.it.id)) : M.items;
+  const pre = {}; if(o && !keep) for(const l of o.lines) if(l.rem>0) pre[l.itemId]=String(l.rem);
+  const vals = keep ? keep.recv : pre, rej = keep ? keep.rej : {};
+  const rows = o ? M.items.filter(r=>o.lines.some(l=>l.itemId===r.it.id) || recvExtra.includes(r.it.id)) : M.items;
   openSheet(`<div class="spread"><h2>${o?`Receive ${esc(o.po||'order')}`:'Log delivery'}</h2><button class="btn sm" data-act="closeSheet">Close</button></div>
-  ${o?`<div class="small muted">${esc(o.supplier||'')} · Accepted is filled with what's still open. Change it to match the ticket. Damaged or refused units go in Rejected; they stay open on the PO.</div>`:`<div class="small muted">For material that arrived without a PO entered here.</div>`}
-  <div class="grid2"><label class="f">Delivered<input type="date" id="rDate" value="${today()}"></label>
-  <label class="f">Ticket #<input id="rTicket" placeholder="Delivery ticket"></label></div>
+  ${o?`<div class="small muted">${o.supplier?esc(o.supplier)+' · ':''}Accepted is filled with what's still open. Change it to match the ticket. Damaged or refused units go in Rejected; they stay open on the PO.</div>`:`<div class="small muted">For material that arrived without a PO entered here.</div>`}
+  <div class="grid2"><label class="f">Delivered<input type="date" id="rDate" value="${esc(keep?.date||today())}"></label>
+  <label class="f">Ticket #<input id="rTicket" placeholder="Delivery ticket" value="${esc(keep?.ticket||'')}"></label></div>
   <div class="colhead"><span></span><span>Accepted</span><span>Rejected</span></div>
-  <div class="list">${rows.map(r=>`<div class="countrow two"><div style="min-width:0"><div style="font-weight:600">${esc(r.it.name)}</div><div class="small muted">${o?`Open ${fmt((o.lines.find(l=>l.itemId===r.it.id)||{}).rem)}`:esc(r.it.unit||'EA')}</div></div>
-    <input type="number" inputmode="numeric" min="0" data-recv="${esc(r.it.id)}" value="${esc(pre[r.it.id]??'')}" placeholder="0" aria-label="${esc(r.it.name)} accepted">
-    <input type="number" inputmode="numeric" min="0" data-rej="${esc(r.it.id)}" placeholder="0" aria-label="${esc(r.it.name)} rejected"></div>`).join('')}</div>
+  <div class="list">${rows.map(r=>{ const ol=o&&o.lines.find(l=>l.itemId===r.it.id); return `<div class="countrow two"><div style="min-width:0"><div style="font-weight:600">${esc(r.it.name)}</div><div class="small muted">${o?(ol?`Open ${fmt(ol.rem)}`:'Not on this PO'):esc(r.it.unit||'EA')}</div></div>
+    <input type="number" inputmode="numeric" min="0" data-recv="${esc(r.it.id)}" value="${esc(vals[r.it.id]??'')}" placeholder="0" aria-label="${esc(r.it.name)} accepted">
+    <input type="number" inputmode="numeric" min="0" data-rej="${esc(r.it.id)}" value="${esc(rej[r.it.id]??'')}" placeholder="0" aria-label="${esc(r.it.name)} rejected"></div>`; }).join('')}</div>
+  ${o && can.field ? `<label class="f">Also on this ticket<select id="rAddItem"><option value="">Add a listed material…</option>${M.items.filter(r=>!rows.includes(r)).map(r=>`<option value="${esc(r.it.id)}">${esc(r.it.name)}</option>`).join('')}</select></label>` : ''}
+  ${newMatForm('recv')}
+  ${!can.manage?'<div class="small muted">Material missing from the list? Ask your foreman to add it, then log the delivery.</div>':''}
   <button class="btn primary" data-act="saveReceive">Save delivery</button>`);
 }
 
@@ -723,13 +753,14 @@ async function act(a, el){
       try{ const gid = d.id || slug(d.name);
         if(d.id) await col('groups').doc(gid).update({name:d.name, unit:d.unit||'units', sfEntry:d.sfEntry, perSF: num(d.perSF)||null}); else await col('groups').doc(gid).set({name:d.name, unit:d.unit||'units', sfEntry:d.sfEntry, perSF: num(d.perSF)||null},{create:true});
         for(const it of S.items){ const role=d.roles[it.id]||'', ratio=has(d.ratios[it.id])?num(d.ratios[it.id]):null;
-          const want = role ? {group:gid, role, ratio} : (it.group===gid ? {group:null, role:null, ratio:null} : null);
-          if(want && (it.group!==want.group || (it.role||null)!==want.role || (has(it.ratio)?num(it.ratio):null)!==want.ratio)) await col('items').doc(it.id).update(want); }
+          const estimate = d.est[it.id] !== false;
+          const want = role ? {group:gid, role, ratio, estimate} : (it.group===gid ? {group:null, role:null, ratio:null} : null);
+          if(want && (it.group!==want.group || (it.role||null)!==want.role || (has(it.ratio)?num(it.ratio):null)!==want.ratio || (role && (it.estimate!==false)!==estimate))) await col('items').doc(it.id).update(want); }
         closeSheet(); toast('Production group saved'); }catch(e){ el.disabled=false; fail(e); } break; }
     case 'delGroup': try{ for(const it of S.items) if(it.group===id) await col('items').doc(it.id).update({group:null, role:null, ratio:null});
         await col('groups').doc(id).update({void:voidStamp()}); closeSheet(); toast('Group removed'); }catch(e){ fail(e); } break;
-    case 'newOrder': sheetOrder(null); break;
-    case 'editOrder': sheetOrder(id); break;
+    case 'newOrder': S.newMat=null; sheetOrder(null); break;
+    case 'editOrder': S.newMat=null; sheetOrder(id); break;
     case 'addLine': syncOrderDraft(); orderDraft.lines.push({itemId:'',qty:''}); drawOrder(); break;
     case 'rmLine': syncOrderDraft(); orderDraft.lines.splice(+el.dataset.i,1); if(!orderDraft.lines.length) orderDraft.lines.push({itemId:'',qty:''}); drawOrder(); break;
     case 'saveOrder': {
@@ -742,6 +773,26 @@ async function act(a, el){
     case 'closeOrder': try{ await col('orders').doc(id).update({closed:true}); toast('Order closed short'); }catch(e){ fail(e); } break;
     case 'reopenOrder': try{ await col('orders').doc(id).update({closed:false}); toast('Order reopened'); }catch(e){ fail(e); } break;
     case 'receive': sheetReceive(id||null); break;
+    case 'nmOpen': case 'nmCancel': {
+      const ctx=el.dataset.ctx;
+      if(ctx==='order'){ syncOrderDraft(); S.newMat = a==='nmOpen'?ctx:null; drawOrder(); }
+      else { const k=captureRecv(); S.newMat = a==='nmOpen'?ctx:null; sheetReceive(recvOrder, k); }
+      document.getElementById('nmName')?.focus(); break; }
+    case 'nmSave': {
+      const ctx=el.dataset.ctx, g=x=>document.getElementById(x);
+      const name=g('nmName').value.trim(); if(!name){ g('nmName').focus(); toast('Give the material a name.'); return; }
+      if(S.items.some(i=>i.name.trim().toLowerCase()===name.toLowerCase())){ toast('That material is already on the list.'); return; }
+      const lenRaw=g('nmLen').value.trim(), lengthIn=parseLen(lenRaw);
+      if(lenRaw && lengthIn==null){ g('nmLen').focus(); toast(`Enter length like 6'-8" or 20'.`); return; }
+      const nid=slug(name);
+      const body={cat:g('nmCat').value, unit:g('nmUnit').value, name, bar:g('nmBar').value, lengthIn:lengthIn||null, required:null, preInstalled:null, sort:S.items.reduce((m,i)=>Math.max(m,num(i.sort)),0)+1};
+      const keep = ctx==='recv' ? captureRecv() : null; if(ctx==='order') syncOrderDraft();
+      col('items').doc(nid).set(body,{create:true});
+      if(!S.items.some(i=>i.id===nid)) S.items=[...S.items,{id:nid,...body}];
+      S.newMat=null; toast(`Added ${name}`);
+      if(ctx==='order'){ const blank=orderDraft.lines.find(l=>!l.itemId); if(blank) blank.itemId=nid; else orderDraft.lines.push({itemId:nid, qty:''}); drawOrder(); }
+      else { if(recvOrder) recvExtra.push(nid); sheetReceive(recvOrder, keep); document.querySelector(`[data-recv="${CSS.escape(nid)}"]`)?.focus(); }
+      break; }
     case 'saveReceive': {
       const lines={}, rejected={};
       document.querySelectorAll('[data-recv]').forEach(i=>{ if(num(i.value)>0) lines[i.dataset.recv]=num(i.value); });
@@ -798,6 +849,7 @@ document.addEventListener('input', e=>{
 });
 document.addEventListener('change', e=>{
   const t=e.target;
+  if(t.id==='rAddItem' && t.value){ const k=captureRecv(); recvExtra.push(t.value); sheetReceive(recvOrder, k); return; }
   if(t.id==='pGroup'){ syncProdDraft(); S.prodDraft.qty=''; t.blur(); render(); }
   if(t.dataset.grole!==undefined && t.dataset.grole){ syncGroupDraft(); drawGroup(); }
 });
@@ -808,8 +860,8 @@ document.getElementById('projSel').addEventListener('change', e=>{ switchProject
 function csvOf(rows){ return rows.map(r=>r.map(v=>{ const s=v==null?'':typeof v==='number'?String(Math.round(v*100)/100):String(v); return /[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s; }).join(',')).join('\r\n'); }
 async function exportCsv(kind){
   const M=model(), p=proj(), nameOf = id => (S.items.find(i=>i.id===id)||{}).name; let rows;
-  if(kind==='summary'){ rows=[['Project',p.number,p.name,'As of',today(),'Waste allowance',M.ST.wasteOn?`on (${M.ST.basis})`:'off'],[],['Category','Material','Unit','Piece length','Takeoff','Waste %','Required net','Required incl waste','Delivered','Installed (counts)','Installed (production)','On hand est','Balance to deliver','Balance to install','Balance to install (production)','% installed','On order','Still to order','Last count']];
-    for(const r of M.items) rows.push([r.it.cat,r.it.name,r.it.unit,ftin(r.it.lengthIn),r.req,M.ST.wasteOn?r.w*100:0,r.net,r.gross,r.delivered,r.installed,r.installedProd,r.onHand,r.balDeliver,r.balInstall,r.balInstallProd,r.pct!=null&&r.counted?Math.round(r.pct*100):'',r.onOrder,r.toOrder!=null?Math.max(0,r.toOrder):'',r.lastAt?r.lastAt.slice(0,10):'']); }
+  if(kind==='summary'){ rows=[['Project',p.number,p.name,'As of',today(),'Waste allowance',M.ST.wasteOn?`on (${M.ST.basis})`:'off'],[],['Category','Material','Unit','Piece length','Takeoff','Waste %','Required net','Required incl waste','Delivered','Installed (counts)','Installed (production)','On hand','On hand est (production)','Balance to deliver','Balance to install','Balance to install (production)','% installed','On order','Still to order','Last count']];
+    for(const r of M.items) rows.push([r.it.cat,r.it.name,r.it.unit,ftin(r.it.lengthIn),r.req,M.ST.wasteOn?r.w*100:0,r.net,r.gross,r.delivered,r.installed,r.installedProd,r.onHand,r.onHandEst,r.balDeliver,r.balInstall,r.balInstallProd,r.pct!=null&&r.counted?Math.round(r.pct*100):'',r.onOrder,r.toOrder!=null?Math.max(0,r.toOrder):'',r.lastAt?r.lastAt.slice(0,10):'']); }
   else if(kind==='recon'){ rows=[['Project',p.number,p.name,'Period',S.recWin==='all'?'Since opening count':'Last count period'],[],['Material','From','To','Start count','Received','Transferred in','Returned/out','End count','Consumed','Logged waste','Installed','Ratio','Expected from production','Variance','Variance %','Waste %','Waste allowance %']];
     for(const r of M.items){ const R=S.recWin==='all'?r.all:r.last; if(!R){ rows.push([r.it.name]); continue; }
       rows.push([r.it.name,R.from.slice(0,10),R.to.slice(0,10),R.open,R.recv,R.inn,R.out,R.close,R.consumed,R.waste,R.installed,r.ratio,R.expected,R.variance,R.varPct!=null?Math.round(R.varPct*1000)/10:'',R.wastePct!=null?Math.round(R.wastePct*1000)/10:'',r.w*100]); } }
