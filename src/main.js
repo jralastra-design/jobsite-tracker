@@ -2,6 +2,7 @@ import './styles.css';
 import { auth, authApi, fs, doc, getDoc, setDoc, onSnapshot, serverTimestamp, setAuditUser, sync } from './fb.js';
 import { OWNER_EMAIL, COMPANY } from './config.js';
 import { startApp, stopApp, appState } from './app.js';
+import { pushState, enablePush, disablePush } from './push.js';
 
 const main = () => document.getElementById('main');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -40,7 +41,7 @@ document.addEventListener('click', e => {
   const b = e.target.closest('[data-auth]'); if (!b) return;
   const a = b.dataset.auth;
   if (['signin', 'signup', 'reset'].includes(a)) { mode = a; note = ''; showSignIn(); }
-  if (a === 'signout') { authApi.signOut(); }
+  if (a === 'signout') { disablePush().finally(() => authApi.signOut()); }
   if (a === 'resend' && currentUser) { authApi.sendEmailVerification(currentUser).then(() => { note = 'Sent. Check your inbox and spam folder.'; showVerify(currentUser); }, err => { note = AUTH_ERR[err.code] || err.message; showVerify(currentUser); }); }
   if (a === 'verified' && currentUser) { currentUser.reload().then(() => currentUser.getIdToken(true)).then(() => route(auth.currentUser)); }
   if (a === 'retry' && currentUser) route(currentUser);
@@ -124,11 +125,24 @@ function showAccount() {
     <dl class="kv"><dt>Name</dt><dd>${esc(me.name || '—')}</dd><dt>Email</dt><dd>${esc(u?.email)}</dd><dt>Role</dt><dd>${esc(ROLE_LABEL[me.role] || me.role)}</dd>
     <dt>Connection</dt><dd>${navigator.onLine ? 'Online' : 'Offline'}</dd><dt>Changes waiting to upload</dt><dd>${sync.pending}</dd></dl>
     ${errs.length ? `<div class="eyebrow">Recent problems</div><div class="list">${errs.map(e => `<div class="logrow"><div class="small">${esc(e.at.toLocaleTimeString())} · ${esc(e.code || '')} ${esc(e.message).slice(0, 140)}</div></div>`).join('')}</div>` : ''}
+    <div class="formula" id="acctPush">Checking notifications…</div>
     <div class="small muted">To install on your phone: iPhone Safari, Share → Add to Home Screen. Android Chrome, ⋮ → Add to Home screen (or Install app).</div>
     <div class="row"><button class="btn" id="acctReset">Email me a password reset</button><button class="btn danger" data-auth="signout">Sign out</button></div>
   </div></div>`;
+  fillAcctPush();
 }
-document.addEventListener('click', e => {
+async function fillAcctPush() {
+  const box = document.getElementById('acctPush'); if (!box) return;
+  const st = await pushState();
+  box.innerHTML = `<b>Notifications:</b> ${esc(st.text)} ${st.state === 'off' ? '<button class="btn sm primary" id="acctPushOn" style="margin-top:6px">Turn on notifications</button>' : ''}`;
+}
+document.addEventListener('click', async e => {
+  if (e.target.id === 'acctPushOn' && auth.currentUser) {
+    e.target.disabled = true;
+    try { await enablePush(auth.currentUser.uid, n => appState.toast(n.title || 'Reminder')); appState.toast('Notifications are on for this phone'); }
+    catch (err) { appState.toast(err.message || 'Could not turn on notifications.'); }
+    fillAcctPush(); return;
+  }
   if (e.target.dataset && e.target.dataset.close) { document.getElementById('sheetRoot').innerHTML = ''; return; }
   if (e.target.id === 'acctReset' && auth.currentUser) authApi.sendPasswordResetEmail(auth.currentUser.email).then(() => appState.toast('Reset email sent'), () => appState.toast('Could not send. Check your connection.'));
   if (e.target.closest('#acctBtn')) showAccount();

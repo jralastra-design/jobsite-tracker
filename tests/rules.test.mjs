@@ -111,3 +111,18 @@ test('admin import: project first, then its entries', async () => {
   await assertSucceeds(setDoc(doc(a, 'projects/IMP/items/i1'), { name: 'x', createdBy: 'admin' }));
   await assertSucceeds(setDoc(doc(a, 'projects/IMP/counts/c1'), { qty: { i1: 3 }, createdBy: 'admin' }));
 });
+
+test('phones register only their own notification token', async () => {
+  const c = as('ctr', 'ctr@x.com');
+  await assertSucceeds(setDoc(doc(c, 'pushTokens/t1'), { uid: 'ctr', token: 'abc' }));
+  await assertFails(setDoc(doc(c, 'pushTokens/t2'), { uid: 'pm', token: 'abc' }));
+  await assertFails(getDocs(collection(c, 'pushTokens')));
+  await assertFails(deleteDoc(doc(as('pm', 'pm@x.com'), 'pushTokens/t1')));
+  await assertSucceeds(deleteDoc(doc(c, 'pushTokens/t1')));
+  await assertFails(setDoc(doc(as('off', 'off@x.com'), 'pushTokens/t3'), { uid: 'off', token: 'x' }));
+});
+
+test('only managers change the count schedule', async () => {
+  await assertFails(updateDoc(doc(as('ctr', 'ctr@x.com'), 'projects/P1'), { countSchedule: { enabled: true } }));
+  await assertSucceeds(updateDoc(doc(as('pm', 'pm@x.com'), 'projects/P1'), { countSchedule: { enabled: true } }));
+});

@@ -1,5 +1,7 @@
 import { db, fs, onSync, onSnapshot, collection, doc, query, where } from './fb.js';
 import { vAdmin, adminAct } from './admin.js';
+import { groupStock, countStatus, WEEKDAYS, DEFAULT_SCHEDULE } from './schedule.js';
+import { pushState, enablePush, resumePush } from './push.js';
 let HOOKS = {}, SYNC = { pending:0, online:true };
 const CATS = ['CMU','Brick','Stone','Rebar','Accessories','Other'];
 const catIdx = c => { const i = CATS.indexOf(c); return i < 0 ? 99 : i; };
@@ -149,8 +151,10 @@ function model(){
     const after = flows(it.id, L.at, null), since = flows(it.id, O.at, null);
     r.expAfter = r.ratio!=null ? prodSum(r.gid, L.at, null)*r.ratio : 0;
     r.onHandCount = L.q + after.net - after.waste;
-    r.onHand = r.onHandCount;                       // counts, deliveries and logged waste only
     r.onHandEst = r.ratio!=null ? r.onHandCount - r.expAfter : null; // also minus production × ratio since last count
+    // Block types (primary) change only at counts; secondaries (rebar, accessories) are estimated between counts if switched on.
+    r.isEst = r.it.role==='secondary' && r.onHandEst!=null && Math.round(r.expAfter)>0;
+    r.onHand = r.isEst ? r.onHandEst : r.onHandCount;
     r.recvAfter = after.net; r.wasteAfter = after.waste;
     const pre = r.pre ?? 0;
     r.delivered = pre + O.q + since.net;
@@ -181,7 +185,9 @@ function model(){
     const byDay = {}; for(const e of base){ const d=e.at.slice(0,10); byDay[d]=(byDay[d]||0)+num(e.qty); }
     const dayList = Object.entries(byDay).sort((a,b)=>a[0]<b[0]?-1:1);
     const recent = dayList.slice(-5); const avg5 = recent.length ? recent.reduce((s,d)=>s+d[1],0)/recent.length : null;
-    return {g, ents, total, days:days.size, avg: days.size ? total/days.size : null, avg5, remaining,
+    const stock = groupStock(g.id, {items:S.items, counts:S.counts, deliveries:S.deliveries, usage:S.usage, production:S.production});
+    const low = has(g.lowStock) && stock.est!=null && stock.est < num(g.lowStock);
+    return {g, stock, low, ents, total, days:days.size, avg: days.size ? total/days.size : null, avg5, remaining,
       daysLeft: remaining!=null && avg5 ? remaining/avg5 : null, dayList, last: ents[ents.length-1], prim, netTot,
       secondary: items.filter(r=>r.gid===g.id && r.it.role==='secondary')};
   });
@@ -213,6 +219,8 @@ function vStatus(M){
     <div><div class="v ${needOrder?'warn':''}">${needOrder}</div><div class="k">Items to order</div></div>
     <div><div class="v ${late?'bad':''}">${openOrders.length}</div><div class="k">Open orders${late?` · ${late} late`:''}</div></div>
   </div>`;
+  const due = p ? countStatus(p, {counts:S.counts, production:S.production}) : null;
+  if(due && due.due) h += `<div class="banner due"><div style="flex:1"><b>Inventory count due.</b> ${due.reasons.map(x=>esc(x.text)).join(' · ')}.</div>${can.field&&!p.closed?'<button class="btn sm primary" data-act="tab" data-tab="count">Start count</button>':''}</div>`;
   for(const G of M.gsum) h += prodCard(G);
   if(flags) h += `<div class="banner"><b>${flags} material${flags>1?'s':''} off the takeoff mix.</b> Actual use since the opening count differs from production × takeoff ratio by more than ${pct(M.ST.thr)}. Check Reports › Reconciliation.</div>`;
   h += `<div class="legend"><span><i style="background:var(--installed)"></i>Installed</span><span><i style="background:var(--onhand)"></i>On hand</span><span><i style="background:var(--track)"></i>Still to deliver</span>${M.ST.wasteOn?'<span>Bars measured against required incl. waste</span>':''}</div>`;
@@ -241,13 +249,18 @@ function prodCard(G){
   return `<section class="panel pad stack">
     <div class="spread"><div><div class="eyebrow">Production</div><h2 style="font-size:22px">${esc(G.g.name)}</h2></div>
     ${can.field&&!proj()?.closed?'<button class="btn sm primary" data-act="tab" data-tab="log">Log today</button>':''}</div>
+    <div class="grid2" style="gap:10px">
+      <div class="stock ${G.low?'low':''}"><div class="k">${u} on hand, all types</div><div class="v">${fmt(G.stock.est)}</div>
+        <div class="k">${G.stock.counted?`${fmt(G.stock.countedOnHand)} at last count${G.stock.laidSince?` − ${fmt(G.stock.laidSince)} laid since`:''}`:'Take a count to start'}</div></div>
+      <div class="stock"><div class="k">${u} left to install</div><div class="v">${fmt(G.remaining)}</div><div class="k">${G.daysLeft!=null?`~${Math.ceil(G.daysLeft)} work days at recent pace`:'Log production to see pace'}</div></div>
+    </div>
+    ${G.low?`<div class="banner"><b>Low ${u} stock.</b> Estimated ${fmt(G.stock.est)} on hand, below your ${fmt(num(G.g.lowStock))} warning level. Check open orders.</div>`:''}
     <div class="prod">
       <div><div class="v">${fmt(lastDay?lastDay[1]:null)}</div><div class="k">${u} laid ${lastDay?fDate(lastDay[0]):'—'}</div></div>
       <div><div class="v">${fmt(G.total)}</div><div class="k">${u} total logged · ${G.days} day${G.days===1?'':'s'}</div></div>
       <div><div class="v">${fmt(G.avg5)}</div><div class="k">avg ${u}/day${G.dayList.length>1?`, last ${Math.min(5,G.dayList.length)} days`:''}</div></div>
-      <div><div class="v">${fmt(G.remaining)}</div><div class="k">${u} left${G.daysLeft!=null?` · ~${Math.ceil(G.daysLeft)} work days`:''}</div></div>
     </div>${spark}
-    <div class="small muted">${G.last?'':'No production logged yet. '}Drives ${G.prim.length} primary and ${G.secondary.length} secondary materials by takeoff ratio.</div>
+    <div class="small muted">${G.last?'':'No production logged yet. '}Each ${u} type below changes only when you count. The all-types total also subtracts ${u} laid since the last count${G.secondary.some(r=>r.ratio!=null)?'; rebar and accessories marked “est.” are estimated by takeoff ratio':''}.</div>
   </section>`;
 }
 function catsOf(items){ const seen=[]; for(const r of items){ const c=r.it.cat||'Other'; if(!seen.includes(c)) seen.push(c);} return seen; }
@@ -262,7 +275,7 @@ function itemRow(r){
     <div class="spread"><div style="min-width:0"><div class="name">${esc(r.it.name)}</div><div class="meta">${esc(itemMeta(r.it))}${r.lastAt?` · counted ${fDate(r.lastAt)}`:''}${r.gid?(r.it.role==='primary'?' · primary':' · secondary')+(r.est?'':' · not estimated'):''}</div></div><span class="chips">${mix}<span class="chip ${cls}">${label}</span></span></div>
     <div class="bar" role="img" aria-label="${fmt(r.installed)} installed, ${fmt(r.onHand)} on hand of ${fmt(r.gross)} required"><i class="ins" style="width:${insW}%"></i><i class="oh" style="left:${insW}%;width:${ohW}%"></i></div>
     <div class="nums">
-      <div><div class="k">On hand</div><div class="v">${fmt(r.onHand)}</div></div>
+      <div><div class="k">On hand${r.isEst?' (est.)':''}</div><div class="v">${fmt(r.onHand)}</div></div>
       <div><div class="k">To deliver</div><div class="v">${fmt(r.balDeliver)}</div></div>
       <div><div class="k">To install</div><div class="v">${fmt(r.balInstall)}</div></div>
     </div></button>`;
@@ -337,7 +350,7 @@ function vCount(M){
       <label class="f">Counted by<input id="cBy" value="${esc(d.by)}" placeholder="Name" autocomplete="name"></label>
     </div>
     <label class="f">Note<input id="cNote" value="${esc(d.note)}" placeholder="e.g. Level 3 stockpile + laydown yard"></label>
-    <div class="small muted">Count everything physically on site. Leave a material blank to skip it; it keeps its last count. “Expected” is the last count plus deliveries since, minus logged waste. Production isn't used.</div>
+    <div class="small muted">Count everything physically on site. Leave a material blank to skip it; it keeps its last count. “Expected” is the last count plus deliveries since, minus logged waste. Block types don't use production; rebar and accessories also subtract their production estimate.</div>
   </div>`;
   for(const cat of catsOf(M.items)){
     h += `<section class="group"><h2>${esc(cat)}</h2><div class="list">`;
@@ -443,6 +456,38 @@ function vReports(M){
   return h + `</section>`;
 }
 
+const TZS = [['America/New_York','Eastern'],['America/Chicago','Central'],['America/Denver','Mountain'],['America/Phoenix','Arizona'],['America/Los_Angeles','Pacific']];
+function vSchedule(M){
+  const p = proj(); if(!p) return '';
+  const sc = {...DEFAULT_SCHEDULE, ...(p.countSchedule||{})};
+  const st = countStatus(p, {counts:S.counts, production:S.production});
+  const nextTxt = !sc.enabled ? 'Reminders are off.' : st.due ? 'A count is due now.' : st.next ? `Next scheduled count: ${st.next.inDays===0?'today':st.next.inDays===1?'tomorrow':WEEKDAYS[st.next.dow]} at ${fmtHM(st.next.time)}.` : 'No weekly days picked.';
+  return `<section class="panel pad stack" id="schedSec">
+    <div class="eyebrow">Inventory checks &amp; reminders</div>
+    <label class="check"><input type="checkbox" id="scOn" ${sc.enabled?'checked':''}> Remind the crew when a count is due</label>
+    <div class="small muted" style="margin-top:-6px">${esc(nextTxt)}${st.laidSince?` ${fmt(st.laidSince)} laid since the last count.`:''}</div>
+    <div class="f" style="font-size:13px;color:var(--muted)">Count on these days
+      <div class="daychips" role="group" aria-label="Count days">${[1,2,3,4,5,6,0].map(d=>`<label><input type="checkbox" data-scday="${d}" ${sc.days.includes(d)?'checked':''}>${WEEKDAYS[d]}</label>`).join('')}</div></div>
+    <div class="grid2"><label class="f">Reminder time<input type="time" id="scTime" value="${esc(sc.time)}"></label>
+    <label class="f">Time zone<select id="scTz">${TZS.map(([v,l])=>`<option value="${v}" ${sc.tz===v?'selected':''}>${l}</option>`).join('')}</select></label></div>
+    <label class="f">Also remind after this many units laid since the last count (blank = off)<input type="number" inputmode="numeric" min="0" step="50" id="scBlock" value="${esc(sc.everyBlock??'')}" placeholder="e.g. 1500"></label>
+    <div class="grid2" style="align-items:end"><label class="check"><input type="checkbox" id="scEsc" ${sc.escalate?'checked':''}> If still not done, alert the foreman and admins at</label>
+    <label class="f"><input type="time" id="scEscTime" value="${esc(sc.escalateTime)}" aria-label="Escalation time"></label></div>
+    <div class="eyebrow">Who gets the count reminder</div>
+    <label class="check"><input type="checkbox" id="scCtr" ${sc.notifyCounters?'checked':''}> Field counters assigned to this job</label>
+    <label class="check"><input type="checkbox" id="scPm" ${sc.notifyPMs?'checked':''}> Foreman / PM assigned to this job</label>
+    ${M.groups.length?`<div class="eyebrow">Low-stock warning</div>${M.groups.map(g=>`<label class="f">Warn when ${esc(g.unit||'units')} on hand, all types, drops below<input type="number" inputmode="numeric" min="0" step="50" data-low="${esc(g.id)}" value="${esc(g.lowStock??'')}" placeholder="e.g. 800 (blank = off)"></label>`).join('')}<div class="small muted">Shows on Status and sends the foreman and admins one alert a day while it's low.</div>`:''}
+    <button class="btn primary" data-act="saveSchedule">Save reminders</button>
+    <div class="formula" id="pushBox">Checking this phone's notification setting…</div>
+  </section>`;
+}
+function fmtHM(hm){ if(!hm) return ''; const [h,m]=hm.split(':').map(Number); return `${(h%12)||12}:${String(m).padStart(2,'0')} ${h<12?'AM':'PM'}`; }
+async function fillPushBox(){
+  const box = document.getElementById('pushBox'); if(!box) return;
+  const st = await pushState();
+  box.innerHTML = `<b>This phone:</b> ${esc(st.text)} ${st.state==='off'?'<button class="btn sm primary" data-act="pushOn" style="margin-top:6px">Turn on notifications</button>':''}${st.state==='on'?'<button class="btn sm" data-act="pushTest" style="margin-top:6px">Send me a test</button>':''}<br><span class="muted">Each person turns notifications on from their own phone, under Setup or the account menu. Reminders are checked about every 15 minutes.</span>`;
+}
+
 function vSetup(M){
   const p=proj(), ST=M.ST, w=p?.waste||{};
   let h = sampleBanner(p);
@@ -459,6 +504,7 @@ function vSetup(M){
     <div class="row"><button class="btn primary" data-act="saveProject">Save project</button><button class="btn" data-act="newProject">New project</button></div>
   </section>`;
 
+  h += vSchedule(M);
   h += `<section class="group"><div class="spread"><h2 style="font-size:18px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)">Production groups</h2><button class="btn sm primary" data-act="editGroup" data-id="">Add group</button></div>
     <p class="small muted" style="margin:4px 2px 8px">A group is what the crew logs each day, like total block laid. Primary materials add up to that number. Secondary materials (rebar, accessories) follow by ratio. Ratios come from the takeoff unless you override them.</p><div class="list">`;
   if(!M.gsum.length) h += `<div class="empty">No production groups yet.</div>`;
@@ -513,6 +559,7 @@ function render(){
     main.innerHTML = note + ({status:vStatus,orders:vOrders,reports:vReports,setup:vSetup})[S.tab](M); return;
   }
   main.innerHTML = ({status:vStatus,log:vLog,count:vCount,orders:vOrders,reports:vReports,setup:vSetup})[S.tab](M);
+  if(S.tab==='setup') fillPushBox();
 }
 document.addEventListener('focusout', ()=>{ setTimeout(()=>{ if(S.pendingRender) render(); }, 0); });
 
@@ -809,6 +856,21 @@ async function act(a, el){
       document.querySelectorAll('[data-wpct]').forEach(i=>{ if(i.value!=='') waste[i.dataset.wpct]=num(i.value); });
       try{ await db.doc('projects/'+S.pid).update({number:g('pNum').value.trim(), name:g('pName').value.trim(), phase:g('pPhase').value,
           wasteOn:g('pWaste').checked, basis:g('pBasis').value, waste, threshold:has(g('pThr').value)?num(g('pThr').value):5}); toast('Project saved'); }catch(e){ fail(e); } break; }
+    case 'saveSchedule': {
+      const g=x=>document.getElementById(x);
+      const days=[...document.querySelectorAll('[data-scday]')].filter(i=>i.checked).map(i=>Number(i.dataset.scday));
+      const sc={enabled:g('scOn').checked, days, time:g('scTime').value||'06:30', tz:g('scTz').value, everyBlock: g('scBlock').value===''?null:num(g('scBlock').value),
+        escalate:g('scEsc').checked, escalateTime:g('scEscTime').value||'15:00', notifyCounters:g('scCtr').checked, notifyPMs:g('scPm').checked};
+      if(sc.enabled && !days.length && !sc.everyBlock){ toast('Pick at least one day, or a number of units laid.'); return; }
+      db.doc('projects/'+S.pid).update({countSchedule:sc});
+      document.querySelectorAll('[data-low]').forEach(i=>{ const v=i.value===''?null:num(i.value); const gr=S.groups.find(x=>x.id===i.dataset.low); if(gr && (gr.lowStock??null)!==v) col('groups').doc(gr.id).update({lowStock:v}); });
+      toast(sc.enabled?'Reminders saved':'Reminders turned off'); break; }
+    case 'pushOn': {
+      el.disabled=true; el.textContent='Turning on…';
+      try{ await enablePush(UID, n=>toast(n.title||'Reminder')); toast('Notifications are on for this phone'); }
+      catch(e){ console.error(e); toast(e.message||'Could not turn on notifications.'); }
+      fillPushBox(); break; }
+    case 'pushTest': toast('Test requested. It arrives within about 15 minutes.'); db.doc('projects/'+S.pid).update({pushTestFor:UID, pushTestAt:new Date().toISOString()}); break;
     case 'closeProject': try{ await db.doc('projects/'+S.pid).update({closed:true, closedOn:today()}); S.confirm=null; toast('Job closed out'); }catch(e){ fail(e); } break;
     case 'reopenProject': try{ await db.doc('projects/'+S.pid).update({closed:false, closedOn:null}); toast('Job reopened'); }catch(e){ fail(e); } break;
     case 'newProject': sheetNewProject(); break;
@@ -939,6 +1001,7 @@ export function startApp(me, uid, hooks){
         toast(st.lastError.code==='permission-denied' ? 'The server refused a change (no permission, or the job is closed).' : 'A change could not be saved: '+st.lastError.message); }
     });
   }
+  if(first){ const h=(location.hash||'').slice(1); if(['count','log','status','orders','reports'].includes(h)) S.tab=h; resumePush(uid, n=>toast(n.title||'Reminder')); }
   if(first || prevRole!==me.role || prevProj!==JSON.stringify(me.projects||[])) listenProjects();
   if(!tabsFor().includes(S.tab)) S.tab='status';
   render();

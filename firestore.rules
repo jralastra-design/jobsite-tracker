@@ -54,6 +54,14 @@ service cloud.firestore {
       allow list, write: if isAdmin();
     }
 
+    // One document per phone that turned notifications on. Read only by the scheduled sender (admin access) and admins.
+    match /pushTokens/{id} {
+      allow create, update: if isActive() && request.resource.data.uid == request.auth.uid;
+      allow delete: if signedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow get: if signedIn() && (resource == null || resource.data.uid == request.auth.uid || isAdmin());
+      allow list: if isAdmin();
+    }
+
     match /audit/{id} {
       allow create: if isActive() && request.resource.data.uid == request.auth.uid;
       allow read, delete: if isAdmin();

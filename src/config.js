@@ -14,3 +14,6 @@ export const firebaseConfig = {
 export const OWNER_EMAIL = 'jralastra@gmail.com';
 
 export const COMPANY = 'Leidal & Hart';
+
+// Web push public key (Firebase console › Project settings › Cloud Messaging › Web Push certificates). Public by design.
+export const VAPID_KEY = '';

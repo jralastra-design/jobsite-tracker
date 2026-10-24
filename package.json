@@ -13,8 +13,9 @@
     "firebase": "12.19.0"
   },
   "devDependencies": {
-    "vite": "6.4.4",
+    "@firebase/rules-unit-testing": "5.0.2",
+    "firebase-admin": "^14.4.0",
     "firebase-tools": "15.34.0",
-    "@firebase/rules-unit-testing": "5.0.2"
+    "vite": "6.4.4"
   }
 }
