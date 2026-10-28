@@ -195,9 +195,11 @@ document.addEventListener('change', async e => {
   const f = e.target.files && e.target.files[0]; if (!f) return;
   try {
     const text = await f.text(); const j = JSON.parse(text);
+    if (/^jobsite-material-tracker\/targets/.test(j.format || '')) { A.importText = null; A.importInfo = 'That\'s a Trowel True takeoff file. Open the job, then Setup › Materials › Import takeoff.'; rerender(); return; }
     if (j.format !== 'jobsite-tracker-export' || !Array.isArray(j.projects)) throw new Error('not an export');
     A.importText = j;
-    A.importInfo = j.projects.map(p => `${esc(p.data.number)} ${esc(p.data.name || '')}: ${Object.entries(p.collections || {}).map(([k, v]) => `${v.length} ${k}`).join(', ')}`).join('<br>');
+    const here = new Set((APP?.S?.allProjects || []).map(p => p.id));
+    A.importInfo = j.projects.map(p => `${esc(p.data.number)} ${esc(p.data.name || '')}: ${Object.entries(p.collections || {}).map(([k, v]) => `${v.length} ${k}`).join(', ')}${here.has(p.id) ? ' — already here, will be skipped. To load its quantities into the existing job, open the job and use Setup › Materials › Import takeoff.' : ''}`).join('<br>');
   } catch (err) { A.importText = null; A.importInfo = 'That file isn\'t a tracker export. Choose the .json file Claude gave you.'; }
   rerender();
 });

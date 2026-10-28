@@ -2,6 +2,7 @@ import { db, fs, onSync, onSnapshot, collection, doc, query, where } from './fb.
 import { vAdmin, adminAct } from './admin.js';
 import { groupStock, countStatus, WEEKDAYS, DEFAULT_SCHEDULE } from './schedule.js';
 import { pushState, enablePush, resumePush } from './push.js';
+import { parseTakeoff, matchItem } from './takeoff.js';
 let HOOKS = {}, SYNC = { pending:0, online:true };
 const CATS = ['CMU','Brick','Stone','Rebar','Accessories','Other'];
 const catIdx = c => { const i = CATS.indexOf(c); return i < 0 ? 99 : i; };
@@ -569,7 +570,7 @@ function vSetup(M){
     <div class="small" style="text-align:right">${G.prim.length} primary<br><span class="muted">${G.secondary.length} secondary</span></div></div></button>`;
   h += `</div></section>`;
 
-  h += `<section class="group"><div class="spread"><h2 style="font-size:18px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)">Materials</h2><button class="btn sm primary" data-act="editItem" data-id="">Add material</button></div>
+  h += `<section class="group"><div class="spread"><h2 style="font-size:18px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)">Materials</h2><span class="row">${can.manage&&!p?.closed?'<button class="btn sm" data-act="tkOpen">Import takeoff</button>':''}<button class="btn sm primary" data-act="editItem" data-id="">Add material</button></span></div>
     <p class="small muted" style="margin:4px 2px 8px">For a job already underway, enter the takeoff quantity and an estimate of what was installed before your first count. Those two numbers plus the opening count set the baseline.</p><div class="list">`;
   if(!M.items.length) h += `<div class="empty">No materials yet.</div>`;
   for(const r of M.items) h += `<button class="item" data-act="editItem" data-id="${esc(r.it.id)}"><div class="spread"><div style="min-width:0"><div class="name">${esc(r.it.name)}</div><div class="meta">${esc(r.it.cat||'Other')} · ${esc(itemMeta(r.it))}${r.gid?` · ${r.it.role} · ratio ${ratioTxt(r.ratio)}`:''}</div></div>
@@ -794,6 +795,44 @@ function sheetReceive(orderId, keep){
   <button class="btn primary" data-act="saveReceive">Save delivery</button>`);
 }
 
+/* ---------- takeoff import (Trowel True) ---------- */
+let TK = null;
+const TK_CATS = ['CMU','Brick','Stone','Rebar','Accessories','Other'];
+function tkQty(r){ const p=proj()||{}; return p.basis==='gross' ? r.gross : r.net; }
+function sheetTakeoff(){ if(!TK) TK={data:null, err:'', on:{}, match:{}}; drawTakeoff(); }
+function drawTakeoff(){
+  const p=proj()||{}, d=TK.data;
+  let h = `<div class="spread"><h2>Import takeoff</h2><button class="btn sm" data-act="closeSheet">Close</button></div>`;
+  if(!d){
+    h += `<p class="small muted" style="margin:0">Choose the takeoff file from Trowel True (Reports › Send to tracker). You pick which lines to bring in and which existing material each one updates. Nothing changes until you tap Import.</p>
+    <label class="f">Takeoff file<input type="file" id="tkFile" accept=".json,application/json"></label>${TK.err?`<div class="banner"><b>Can't read that file.</b> ${esc(TK.err)}</div>`:''}`;
+    openSheet(h, drawTakeoff); return;
+  }
+  const n = d.rows.filter(r=>TK.on[r.key]).length, fp=d.project||{};
+  const warn = [];
+  if(fp.number && p.number && String(fp.number).trim()!==String(p.number).trim()) warn.push(`This takeoff is for <b>${esc(fp.number)} ${esc(fp.name||'')}</b>, not ${esc(p.number)}. Check you're on the right job.`);
+  if(d.wasteIncluded && p.wasteOn && p.basis!=='gross') warn.push('The file already includes waste, and this job adds waste on top (Setup › Takeoff quantities are Net). Switch the job to Gross, or export again from Trowel True, so waste isn\'t counted twice.');
+  h += `<div class="small muted">${esc(d.source)} · ${esc(fp.number||'')} ${esc(fp.name||'')} · quantities are ${p.basis==='gross'?'gross (with waste)':'net (no waste)'} to match this job${d.wasteIncluded?' (file includes waste)':''}.</div>
+  ${warn.map(w=>`<div class="banner">${w}</div>`).join('')}
+  <div class="row"><button class="btn sm" data-act="tkPick" data-v="units">Units &amp; rebar</button><button class="btn sm" data-act="tkPick" data-v="all">All</button><button class="btn sm" data-act="tkPick" data-v="none">None</button></div>`;
+  const items=[...S.items].sort((a,b)=>String(a.name).localeCompare(b.name));
+  for(const cat of TK_CATS){ const rows=d.rows.filter(r=>r.cat===cat); if(!rows.length) continue;
+    h += `<section class="group"><h2>${esc(cat)}</h2><div class="list">${rows.map(r=>{ const m=TK.match[r.key]||'new';
+      return `<div class="countrow tk"><label class="check" style="min-height:0;align-items:flex-start"><input type="checkbox" data-tkon="${esc(r.key)}" ${TK.on[r.key]?'checked':''}><span style="min-width:0"><span style="font-weight:600">${esc(r.name)}</span><br><span class="small muted">${fmt(tkQty(r))} ${esc(r.unit)}${r.lines.length>1?` · ${r.lines.length} takeoff lines combined`:''}</span></span></label>
+      <select data-tkmatch="${esc(r.key)}" aria-label="${esc(r.name)}: update which material" ${TK.on[r.key]?'':'disabled'}><option value="new" ${m==='new'?'selected':''}>Add as new material</option>${items.map(it=>`<option value="${esc(it.id)}" ${m===it.id?'selected':''}>Update: ${esc(it.name)}</option>`).join('')}</select></div>`; }).join('')}</div></section>`; }
+  h += `<div class="savebar"><button class="btn primary block" data-act="tkImport" ${n?'':'disabled'}>Import ${n} line${n===1?'':'s'}</button></div>
+  <div class="small muted">Updating a material replaces its takeoff quantity. Counts, deliveries, orders and production stay as they are.</div>`;
+  openSheet(h, drawTakeoff);
+}
+function tkSync(){ if(!TK||!TK.data) return; document.querySelectorAll('[data-tkon]').forEach(el=>{ TK.on[el.dataset.tkon]=el.checked; }); document.querySelectorAll('[data-tkmatch]').forEach(el=>{ TK.match[el.dataset.tkmatch]=el.value; }); }
+async function tkLoad(file){
+  try{ const j=JSON.parse(await file.text()); const d=parseTakeoff(j); if(!d.rows.length) throw new Error('empty');
+    TK={data:d, err:'', on:{}, match:{}};
+    for(const r of d.rows){ TK.on[r.key]=!!r.on; const m=matchItem(r, S.items); TK.match[r.key]=m?m.id:'new'; if(m) TK.on[r.key]=true; }
+  }catch(e){ TK={data:null, on:{}, match:{}, err: e.message==='empty' ? 'It has no quantities.' : 'Choose the .json takeoff file exported from Trowel True.'}; }
+  drawTakeoff();
+}
+
 function sheetNewProject(){
   openSheet(`<div class="spread"><h2>New project</h2><button class="btn sm" data-act="closeSheet">Close</button></div>
   <div class="grid2"><label class="f">Project number<input id="npNum" placeholder="126-002"></label>
@@ -936,6 +975,18 @@ async function act(a, el){
     case 'closeProject': try{ await db.doc('projects/'+S.pid).update({closed:true, closedOn:today()}); S.confirm=null; toast('Job closed out'); }catch(e){ fail(e); } break;
     case 'reopenProject': try{ await db.doc('projects/'+S.pid).update({closed:false, closedOn:null}); toast('Job reopened'); }catch(e){ fail(e); } break;
     case 'newProject': sheetNewProject(); break;
+    case 'tkOpen': TK=null; sheetTakeoff(); break;
+    case 'tkPick': { tkSync(); const v=el.dataset.v; for(const r of TK.data.rows) TK.on[r.key] = v==='all' ? true : v==='none' ? false : (['CMU','Brick','Stone','Rebar'].includes(r.cat) && (r.cat!=='Rebar' || r.net>=5)); drawTakeoff(); break; }
+    case 'tkImport': {
+      tkSync(); const d=TK.data; if(!d) return; el.disabled=true;
+      const add=new Map(), upd=new Map();
+      for(const r of d.rows){ if(!TK.on[r.key]) continue; const q=r.unit==='EA'?Math.ceil(tkQty(r)-1e-6):Math.round(tkQty(r)*100)/100, m=TK.match[r.key]||'new';
+        if(m==='new'){ add.set(r.key,{r,q}); } else { const u=upd.get(m)||{q:0, keys:[]}; u.q+=q; u.keys.push(r.key); upd.set(m,u); } }
+      try{ let sort=S.items.reduce((mx,i)=>Math.max(mx,num(i.sort)),0);
+        for(const [id,u] of upd) await col('items').doc(id).update({required:Math.round(u.q*100)/100, ttKey:u.keys[0]});
+        for(const {r,q} of add.values()) await col('items').doc(slug(r.name)).set({cat:r.cat, unit:r.unit, name:r.name, bar:r.bar||'', lengthIn:r.lengthIn||null, required:q, preInstalled:null, sort:++sort, ttKey:r.key},{create:true});
+        closeSheet(); TK=null; toast(`Takeoff imported: ${upd.size} updated, ${add.size} added`);
+      }catch(e){ el.disabled=false; fail(e); } break; }
     case 'createProject': {
       const g=x=>document.getElementById(x); const number=g('npNum').value.trim(), name=g('npName').value.trim();
       if(!number){ g('npNum').focus(); toast('Enter a project number.'); return; }
@@ -976,6 +1027,8 @@ document.addEventListener('input', e=>{
 document.addEventListener('change', e=>{
   const t=e.target;
   if(t.dataset && t.dataset.plansel){ const s2=S.planSel||(S.planSel=new Set()); t.checked?s2.add(t.dataset.plansel):s2.delete(t.dataset.plansel); t.blur(); render(); return; }
+  if(t.id==='tkFile' && t.files && t.files[0]){ tkLoad(t.files[0]); return; }
+  if(t.dataset && (t.dataset.tkon!==undefined || t.dataset.tkmatch!==undefined)){ tkSync(); if(t.dataset.tkon!==undefined) drawTakeoff(); return; }
   if(t.id==='rAddItem' && t.value){ const k=captureRecv(); recvExtra.push(t.value); sheetReceive(recvOrder, k); return; }
   if(t.id==='pGroup'){ syncProdDraft(); S.prodDraft.qty=''; t.blur(); render(); }
   if(t.dataset.grole!==undefined && t.dataset.grole){ syncGroupDraft(); drawGroup(); }

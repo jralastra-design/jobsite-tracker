@@ -223,3 +223,7 @@ table.plan td.ck+td,table.plan th.ck+th{text-align:left}
 .plan-row input{width:22px;height:22px;accent-color:var(--accent);flex:none}
 .plan-row .ckpad{width:22px;flex:none}
 @media (max-width:640px){.plan-list{display:block}.plan-table{display:none}}
+.countrow.tk{grid-template-columns:1fr;gap:6px}
+.countrow.tk label.check{gap:10px}
+.countrow.tk select{font-size:14px;font-weight:500;min-height:40px}
+.countrow.tk select:disabled{opacity:.5}
