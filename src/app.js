@@ -368,7 +368,7 @@ function vCount(M){
 }
 function conv(r, v){ if(!has(v) || !r.lfPer) return ''; const lf=num(v)*r.lfPer; return `= ${fmt(lf)} LF${r.wtPer?` · ${fmt(num(v)*r.wtPer)} lb`:''}`; }
 
-function vOrders(M){
+function vOrdersMain(M){
   const nameOf = id => (S.items.find(i=>i.id===id)||{}).name || 'Removed item';
   const closed = !!proj()?.closed;
   let h = closed || !can.field ? '' : `<div class="row">${can.manage?'<button class="btn primary" data-act="newOrder">New order</button>':''}<button class="btn" data-act="receive" data-id="">Log delivery</button></div>`;
@@ -400,6 +400,63 @@ function vOrders(M){
       ${voidBtn('deliveries', d)}</div>`;
   }
   return h + `</div></section>`;
+}
+function vOrders(M){
+  const v = S.ordView || 'pos';
+  return `<div class="seg orders-seg" role="group" aria-label="Orders view"><button data-act="ordView" data-v="pos" aria-pressed="${v==='pos'}">Purchase orders</button><button data-act="ordView" data-v="plan" aria-pressed="${v==='plan'}">Order planner</button></div>
+  <div class="orders-layout"><div class="ol-main ${v==='plan'?'hide-narrow':''}">${vOrdersMain(M)}</div><aside class="ol-side ${v!=='plan'?'hide-narrow':''}" aria-label="Order planner">${vPlanner(M)}</aside></div>`;
+}
+function planList(rows, sel, pick){
+  let h = '<div class="list plan-list">';
+  for(const cat of catsOf(rows)){
+    h += `<div class="plan-cat">${esc(cat)}</div>`;
+    for(const r of rows.filter(x=>(x.it.cat||'Other')===cat)){
+      const need = r.toOrder!=null && r.toOrder>=0.5, over = r.balDeliver!=null && r.balDeliver < -0.5;
+      h += `<label class="plan-row ${need?'need':''}">${pick&&need?`<input type="checkbox" data-plansel="${esc(r.it.id)}" ${sel.has(r.it.id)?'checked':''}>`:'<span class="ckpad"></span>'}
+        <span style="min-width:0;flex:1"><span style="font-weight:600">${esc(r.it.name)}</span>
+        <span class="small muted" style="display:block">Need ${fmt(r.gross)} · on site ${fmt(r.onHand)}${r.isEst?' est.':''} · on order ${fmt(r.onOrder)}</span></span>
+        <span class="chip ${need?'warn':over?'bad':'ok'}">${need?`Order ${fmt(r.toOrder)}`:over?`Over ${fmt(-r.balDeliver)}`:'Covered'}</span></label>`;
+    }
+  }
+  return h + '</div>';
+}
+function vPlanner(M){
+  const sel = S.planSel || (S.planSel = new Set());
+  const rows = M.items.filter(r=>r.gross!=null);
+  const pick = can.manage && !proj()?.closed;
+  let h = `<section class="panel pad stack planner">
+    <div class="spread"><div><div class="eyebrow">Order planner</div><h2 style="font-size:22px">What's left to get</h2></div></div>
+    <div class="small muted">Need${M.ST.wasteOn?' (incl. waste)':''} − delivered − on order = <b>to order</b>. On site is the last count plus deliveries since${rows.some(r=>r.isEst)?' (rebar and accessories marked est. also subtract their production estimate)':''}.</div>`;
+  for(const G of M.gsum){
+    const prim = rows.filter(r=>r.gid===G.g.id && r.it.role==='primary'); if(!prim.length) continue;
+    const sum = f => prim.reduce((s2,r)=>s2+(f(r)||0),0);
+    const need=sum(r=>r.gross), deliv=sum(r=>r.delivered), onOrd=sum(r=>r.onOrder), toOrd=sum(r=>Math.max(0,r.toOrder||0));
+    const cover = G.avg5 && G.stock.est!=null ? (G.stock.est + onOrd)/G.avg5 : null;
+    const u = esc(G.g.unit||'units');
+    h += `<div class="plan-total"><div class="spread"><b>${esc(G.g.name)} · all types</b>${cover!=null?`<span class="chip ${cover<5?'bad':cover<10?'warn':'ok'}">On site + on order ≈ ${Math.floor(cover)} work days</span>`:''}</div>
+      <div class="plan-nums"><div><span>Need</span><b>${fmt(need)}</b></div><div><span>Delivered</span><b>${fmt(deliv)}</b></div><div><span>On site</span><b>${fmt(G.stock.est)}</b></div><div><span>On order</span><b>${fmt(onOrd)}</b></div><div class="${toOrd?'hot':''}"><span>To order</span><b>${fmt(toOrd)}</b></div></div>
+      ${cover!=null?`<div class="small muted">At ${fmt(G.avg5)} ${u}/day recent pace.</div>`:''}</div>`;
+  }
+  if(!rows.length) return h + `<div class="empty">Enter takeoff quantities in Setup to see what's left to order.</div></section>`;
+  h += planList(rows, sel, pick);
+  h += `<div class="tablewrap plan-table"><table class="plan"><thead><tr>${pick?'<th class="ck"><span class="sr">Select</span></th>':''}<th>Material</th><th>Need</th><th class="wo">Deliv'd</th><th>On site</th><th>On order</th><th>To order</th></tr></thead><tbody>`;
+  for(const cat of catsOf(rows)){
+    h += `<tr class="cat"><td colspan="${pick?7:6}">${esc(cat)}</td></tr>`;
+    for(const r of rows.filter(x=>(x.it.cat||'Other')===cat)){
+      const to = r.toOrder==null ? null : r.toOrder;
+      const need = to!=null && to>=0.5, over = r.balDeliver!=null && r.balDeliver < -0.5;
+      h += `<tr class="${need?'need':''}">${pick?`<td class="ck">${need?`<input type="checkbox" data-plansel="${esc(r.it.id)}" ${sel.has(r.it.id)?'checked':''} aria-label="Order ${esc(r.it.name)}">`:''}</td>`:''}
+        <td>${esc(r.it.name)}${r.counted?'':' <span class="chip neutral">Not counted</span>'}</td><td>${fmt(r.gross)}</td><td class="wo">${fmt(r.delivered)}</td><td>${fmt(r.onHand)}${r.isEst?'<span class="muted"> est.</span>':''}</td><td>${fmt(r.onOrder)}</td>
+        <td class="${need?'hot':over?'neg':''}">${over?`Over ${fmt(-r.balDeliver)}`:need?fmt(to):'—'}</td></tr>`;
+    }
+  }
+  h += `</tbody></table></div>`;
+  if(pick){
+    const n = [...sel].filter(id=>rows.some(r=>r.it.id===id && r.toOrder>=0.5)).length;
+    h += `<div class="row"><button class="btn primary" data-act="planPO" ${n?'':'disabled'}>Create PO for ${n||''} selected</button><button class="linkbtn" data-act="planAll">Select everything to order</button></div>
+      <div class="small muted">The PO opens filled with the to-order quantities. Adjust them for pallet or bundle sizes before saving.</div>`;
+  }
+  return h + `</section>`;
 }
 const FIELD_COLS=['counts','production','usage','deliveries'];
 function voidBtn(coll, rec){
@@ -558,6 +615,7 @@ function render(){
     if(S.tab==='log'||S.tab==='count'){ main.innerHTML = note + `<div class="panel empty"><h2>Logging is off for closed jobs</h2><p>Switch to an open job in the header, or reopen this one.</p><button class="btn" data-act="tab" data-tab="setup">Go to Setup</button></div>`; return; }
     main.innerHTML = note + ({status:vStatus,orders:vOrders,reports:vReports,setup:vSetup})[S.tab](M); return;
   }
+  main.classList.toggle('wide', S.tab==='orders');
   main.innerHTML = ({status:vStatus,log:vLog,count:vCount,orders:vOrders,reports:vReports,setup:vSetup})[S.tab](M);
   if(S.tab==='setup') fillPushBox();
 }
@@ -667,9 +725,9 @@ function syncGroupDraft(){
 }
 
 let orderDraft=null;
-function sheetOrder(id){
+function sheetOrder(id, prefill){
   const o = id ? S.orders.find(x=>x.id===id) : null;
-  orderDraft = { id:id||null, po:o?.po||'', supplier:o?.supplier||'', ordered:o?.ordered||today(), needBy:o?.needBy||'', note:o?.note||'', lines:(o?.lines||[{itemId:'',qty:''}]).map(l=>({...l})) };
+  orderDraft = { id:id||null, po:o?.po||'', supplier:o?.supplier||'', ordered:o?.ordered||today(), needBy:o?.needBy||'', note:o?.note||'', lines:(prefill||o?.lines||[{itemId:'',qty:''}]).map(l=>({...l})) };
   drawOrder();
 }
 function drawOrder(){
@@ -809,6 +867,10 @@ async function act(a, el){
     case 'delGroup': try{ for(const it of S.items) if(it.group===id) await col('items').doc(it.id).update({group:null, role:null, ratio:null});
         await col('groups').doc(id).update({void:voidStamp()}); closeSheet(); toast('Group removed'); }catch(e){ fail(e); } break;
     case 'newOrder': S.newMat=null; sheetOrder(null); break;
+    case 'ordView': S.ordView=el.dataset.v; render(); break;
+    case 'planAll': { const M=model(); S.planSel=new Set(M.items.filter(r=>r.toOrder>=0.5).map(r=>r.it.id)); render(); break; }
+    case 'planPO': { const M=model(); const lines=M.items.filter(r=>S.planSel?.has(r.it.id) && r.toOrder>=0.5).map(r=>({itemId:r.it.id, qty:String(Math.ceil(r.toOrder))}));
+      if(!lines.length) return; S.newMat=null; sheetOrder(null, lines); break; }
     case 'editOrder': S.newMat=null; sheetOrder(id); break;
     case 'addLine': syncOrderDraft(); orderDraft.lines.push({itemId:'',qty:''}); drawOrder(); break;
     case 'rmLine': syncOrderDraft(); orderDraft.lines.splice(+el.dataset.i,1); if(!orderDraft.lines.length) orderDraft.lines.push({itemId:'',qty:''}); drawOrder(); break;
@@ -818,7 +880,7 @@ async function act(a, el){
       if(!lines.length){ toast('Add at least one material and quantity.'); return; }
       const body={po:d.po, supplier:d.supplier, ordered:d.ordered, needBy:d.needBy, note:d.note, lines};
       try{ if(d.id) await col('orders').doc(d.id).update(body); else await col('orders').add({...body, closed:false});
-        closeSheet(); toast('Order saved'); }catch(e){ fail(e); } break; }
+        closeSheet(); S.planSel=new Set(); toast('Order saved'); }catch(e){ fail(e); } break; }
     case 'closeOrder': try{ await col('orders').doc(id).update({closed:true}); toast('Order closed short'); }catch(e){ fail(e); } break;
     case 'reopenOrder': try{ await col('orders').doc(id).update({closed:false}); toast('Order reopened'); }catch(e){ fail(e); } break;
     case 'receive': sheetReceive(id||null); break;
@@ -913,6 +975,7 @@ document.addEventListener('input', e=>{
 });
 document.addEventListener('change', e=>{
   const t=e.target;
+  if(t.dataset && t.dataset.plansel){ const s2=S.planSel||(S.planSel=new Set()); t.checked?s2.add(t.dataset.plansel):s2.delete(t.dataset.plansel); t.blur(); render(); return; }
   if(t.id==='rAddItem' && t.value){ const k=captureRecv(); recvExtra.push(t.value); sheetReceive(recvOrder, k); return; }
   if(t.id==='pGroup'){ syncProdDraft(); S.prodDraft.qty=''; t.blur(); render(); }
   if(t.dataset.grole!==undefined && t.dataset.grole){ syncGroupDraft(); drawGroup(); }
