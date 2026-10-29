@@ -6,7 +6,7 @@
 const TRACK_CATS = ['CMU', 'Brick', 'Stone', 'Rebar'];
 
 export function catOf(category, item, wg, kind) {
-  if (wg === 'rebar' || barOf(item)) return 'Rebar';
+  if (wg === 'rebar' || barOf(item) || /^#\d{1,2}\b.*\b(bar|rebar|dowel)\b/i.test(String(item || ''))) return 'Rebar';
   if (wg === 'mortar' || wg === 'grout') return 'Other';
   const t = String(item || '');
   const unitName = /^(bond beam|half block|bullnose|sash|cap|precast lintel|block \/ cmu|brick|soldier|rowlock|sailor|stone|cast stone (band|sill|veneer)|corner)/i.test(t);
@@ -19,6 +19,7 @@ export function catOf(category, item, wg, kind) {
 }
 // "#5 rebar, vertical @ 6'-8"" · "#5 jamb bar @ 4'-0"" · "#5 dowel, drilled & epoxied @ 3'-0" (footing)"
 export function barOf(item) {
+  if (/corner bar|tee bar|bent/i.test(String(item || ''))) return null; // bent bars are their own material
   const m = String(item || '').match(/^(#\d{1,2})\b[^@]*@\s*(\d+)'\s*-\s*(\d+(?:\.\d+)?)"/);
   if (!m) return null;
   return { bar: m[1], lengthIn: Math.round(Number(m[2]) * 12 + Number(m[3])) };
