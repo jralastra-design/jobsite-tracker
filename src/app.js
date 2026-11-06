@@ -1,4 +1,4 @@
-import { db, fs, onSync, onSnapshot, collection, doc, query, where } from './fb.js';
+import { db, fs, onSync, onSnapshot, collection, doc, query, where, getDocs } from './fb.js';
 import { vAdmin, adminAct } from './admin.js';
 import { groupStock, countStatus, WEEKDAYS, DEFAULT_SCHEDULE } from './schedule.js';
 import { pushState, enablePush, resumePush } from './push.js';
@@ -17,6 +17,26 @@ const TABS = [
   ['admin','Admin','<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/>'],
   ['setup','Setup','<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>']
 ];
+/* ---------- search ---------- */
+const ALIAS = {ko:'knock out', hs:'high strength', bb:'bond beam', ww:'wall ties', pos:'positioner', reb:'rebar', blk:'cmu', block:'cmu', '12in':'12', '8in':'8', '4in':'4', '6in':'6', '10in':'10'};
+const normQ = t => String(t||'').toLowerCase().replace(/(\d+)\s*(?:"|in\b|inch(?:es)?)/g,'$1 ').replace(/knock-?out/g,'knock out').replace(/[^a-z0-9#]+/g,' ').trim();
+function matchQ(name, q){
+  const hay = ' '+normQ(name)+' ';
+  return normQ(q).split(' ').filter(Boolean).every(tok=>{ const a=ALIAS[tok]; return hay.includes(' '+tok) || (a && hay.includes(' '+normQ(a))); });
+}
+function searchBox(scope, placeholder){
+  return `<label class="searchbox"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input type="search" id="q-${scope}" data-qscope="${scope}" value="${esc((S.q||{})[scope]||'')}" placeholder="${esc(placeholder)}" aria-label="Search materials" autocomplete="off"></label>`;
+}
+function applySearch(scope){
+  const q = ((S.q||{})[scope]||'').trim();
+  const root = document.getElementById(scope==='np'?'sheetRoot':'main'); if(!root) return;
+  root.querySelectorAll(`[data-fs="${scope}"]`).forEach(el=>{ el.hidden = !!q && !matchQ(el.dataset.fname, q); });
+  // hide group headers whose rows are all hidden
+  root.querySelectorAll(`[data-fsgroup="${scope}"]`).forEach(g=>{ const rows=g.querySelectorAll(`[data-fs="${scope}"]`); g.hidden = !!q && rows.length>0 && [...rows].every(r=>r.hidden); });
+  root.querySelectorAll(`[data-fscat="${scope}"]`).forEach(c=>{ let n=c.nextElementSibling, any=false; while(n && !n.matches('[data-fscat]')){ if(n.matches(`[data-fs="${scope}"]`) && !n.hidden) any=true; n=n.nextElementSibling; } c.hidden = !!q && !any; });
+  const none = root.querySelector(`[data-fsnone="${scope}"]`); if(none) none.hidden = !q || !!root.querySelector(`[data-fs="${scope}"]:not([hidden])`);
+}
+
 function tabsFor(){
   const r = ME?.role;
   if(r==='admin') return ['status','log','count','orders','reports','setup','admin'];
@@ -105,7 +125,7 @@ function model(){
   }).sort((a,b)=> (a.status==='Received'||a.status==='Closed') - (b.status==='Received'||b.status==='Closed') || (b.ordered||'').localeCompare(a.ordered||''));
 
   // takeoff quantities, waste allowance, ratios
-  const base = S.items.map(it=>{
+  const base = S.items.filter(it=>!it.inactive).map(it=>{
     const w = ST.rate(it.cat||'Other'); const req = has(it.required) ? num(it.required) : null;
     let net=null, gross=null;
     if(req!=null){ if(!ST.wasteOn){ net=gross=req; } else if(ST.basis==='net'){ net=req; gross=req*(1+w); } else { gross=req; net=req/(1+w); } }
@@ -353,11 +373,13 @@ function vCount(M){
     <label class="f">Note<input id="cNote" value="${esc(d.note)}" placeholder="e.g. Level 3 stockpile + laydown yard"></label>
     <div class="small muted">Count everything physically on site. Leave a material blank to skip it; it keeps its last count. “Expected” is the last count plus deliveries since, minus logged waste. Block types don't use production; rebar and accessories also subtract their production estimate.</div>
   </div>`;
+  h += searchBox('count', 'Find a material, e.g. 12 KO or #5');
+  h += `<div class="panel empty" data-fsnone="count" hidden>No materials match. Hidden materials can be turned back on in Setup.</div>`;
   for(const cat of catsOf(M.items)){
-    h += `<section class="group"><h2>${esc(cat)}</h2><div class="list">`;
+    h += `<section class="group" data-fsgroup="count"><h2>${esc(cat)}</h2><div class="list">`;
     for(const r of M.items.filter(x=>(x.it.cat||'Other')===cat)){
       const v = d.qty[r.it.id] ?? '';
-      h += `<div class="countrow"><div style="min-width:0"><div style="font-weight:600">${esc(r.it.name)}</div>
+      h += `<div class="countrow" data-fs="count" data-fname="${esc(r.it.name)}"><div style="min-width:0"><div style="font-weight:600">${esc(r.it.name)}</div>
         <div class="small muted">${r.counted?`Last ${fmt(r.lastQty)} · ${fDate(r.lastAt)}${r.onHand!==r.lastQty?` · expected ${fmt(r.onHand)}`:''}`:'First count'}</div>
         <div class="conv" data-conv="${esc(r.it.id)}">${conv(r, v)}</div></div>
         <input type="number" inputmode="numeric" min="0" step="1" id="q-${esc(r.it.id)}" data-qty="${esc(r.it.id)}" value="${esc(v)}" placeholder="${esc(r.it.unit||'EA')}" aria-label="${esc(r.it.name)} count"></div>`;
@@ -377,7 +399,7 @@ function vOrdersMain(M){
   if(!M.orders.length) h += `<div class="panel empty">No orders yet. Enter POs as you place them so you can see what's still coming.</div>`;
   for(const o of M.orders){
     const chip = o.status==='Received'?'ok':o.status==='Closed'?'neutral':o.late?'bad':o.status==='Partial'?'warn':'acc';
-    h += `<article class="panel pad order" style="margin-bottom:10px">
+    h += `<article class="panel pad order" style="margin-bottom:10px" data-fs="orders" data-fname="${esc([o.po, o.supplier, ...o.lines.map(l=>nameOf(l.itemId))].join(' '))}">
       <div class="spread"><div style="min-width:0"><h3>${esc(o.po||'No PO #')}</h3><div class="small muted">${esc(o.supplier||'Supplier not set')}</div></div>
       <span class="chip ${chip}">${o.late?'Late · ':''}${o.status}</span></div>
       <div class="small muted" style="margin-top:4px">Ordered ${fDate(o.ordered)}${o.needBy?` · need by ${fDate(o.needBy)}`:''}${o.note?` · ${esc(o.note)}`:''}</div>
@@ -404,16 +426,16 @@ function vOrdersMain(M){
 }
 function vOrders(M){
   const v = S.ordView || 'pos';
-  return `<div class="seg orders-seg" role="group" aria-label="Orders view"><button data-act="ordView" data-v="pos" aria-pressed="${v==='pos'}">Purchase orders</button><button data-act="ordView" data-v="plan" aria-pressed="${v==='plan'}">Order planner</button></div>
+  return searchBox('orders', 'Find a material or PO') + `<div class="seg orders-seg" role="group" aria-label="Orders view"><button data-act="ordView" data-v="pos" aria-pressed="${v==='pos'}">Purchase orders</button><button data-act="ordView" data-v="plan" aria-pressed="${v==='plan'}">Order planner</button></div>
   <div class="orders-layout"><div class="ol-main ${v==='plan'?'hide-narrow':''}">${vOrdersMain(M)}</div><aside class="ol-side ${v!=='plan'?'hide-narrow':''}" aria-label="Order planner">${vPlanner(M)}</aside></div>`;
 }
 function planList(rows, sel, pick){
   let h = '<div class="list plan-list">';
   for(const cat of catsOf(rows)){
-    h += `<div class="plan-cat">${esc(cat)}</div>`;
+    h += `<div class="plan-cat" data-fscat="orders">${esc(cat)}</div>`;
     for(const r of rows.filter(x=>(x.it.cat||'Other')===cat)){
       const need = r.toOrder!=null && r.toOrder>=0.5, over = r.balDeliver!=null && r.balDeliver < -0.5;
-      h += `<label class="plan-row ${need?'need':''}">${pick&&need?`<input type="checkbox" data-plansel="${esc(r.it.id)}" ${sel.has(r.it.id)?'checked':''}>`:'<span class="ckpad"></span>'}
+      h += `<label class="plan-row ${need?'need':''}" data-fs="orders" data-fname="${esc(r.it.name)}">${pick&&need?`<input type="checkbox" data-plansel="${esc(r.it.id)}" ${sel.has(r.it.id)?'checked':''}>`:'<span class="ckpad"></span>'}
         <span style="min-width:0;flex:1"><span style="font-weight:600">${esc(r.it.name)}</span>
         <span class="small muted" style="display:block">Need ${fmt(r.gross)} · on site ${fmt(r.onHand)}${r.isEst?' est.':''} · on order ${fmt(r.onOrder)}</span></span>
         <span class="chip ${need?'warn':over?'bad':'ok'}">${need?`Order ${fmt(r.toOrder)}`:over?`Over ${fmt(-r.balDeliver)}`:'Covered'}</span></label>`;
@@ -442,11 +464,11 @@ function vPlanner(M){
   h += planList(rows, sel, pick);
   h += `<div class="tablewrap plan-table"><table class="plan"><thead><tr>${pick?'<th class="ck"><span class="sr">Select</span></th>':''}<th>Material</th><th>Need</th><th class="wo">Deliv'd</th><th>On site</th><th>On order</th><th>To order</th></tr></thead><tbody>`;
   for(const cat of catsOf(rows)){
-    h += `<tr class="cat"><td colspan="${pick?7:6}">${esc(cat)}</td></tr>`;
+    h += `<tr class="cat" data-fscat="orders"><td colspan="${pick?7:6}">${esc(cat)}</td></tr>`;
     for(const r of rows.filter(x=>(x.it.cat||'Other')===cat)){
       const to = r.toOrder==null ? null : r.toOrder;
       const need = to!=null && to>=0.5, over = r.balDeliver!=null && r.balDeliver < -0.5;
-      h += `<tr class="${need?'need':''}">${pick?`<td class="ck">${need?`<input type="checkbox" data-plansel="${esc(r.it.id)}" ${sel.has(r.it.id)?'checked':''} aria-label="Order ${esc(r.it.name)}">`:''}</td>`:''}
+      h += `<tr class="${need?'need':''}" data-fs="orders" data-fname="${esc(r.it.name)}">${pick?`<td class="ck">${need?`<input type="checkbox" data-plansel="${esc(r.it.id)}" ${sel.has(r.it.id)?'checked':''} aria-label="Order ${esc(r.it.name)}">`:''}</td>`:''}
         <td>${esc(r.it.name)}${r.counted?'':' <span class="chip neutral">Not counted</span>'}</td><td>${fmt(r.gross)}</td><td class="wo">${fmt(r.delivered)}</td><td>${fmt(r.onHand)}${r.isEst?'<span class="muted"> est.</span>':''}</td><td>${fmt(r.onOrder)}</td>
         <td class="${need?'hot':over?'neg':''}">${over?`Over ${fmt(-r.balDeliver)}`:need?fmt(to):'—'}</td></tr>`;
     }
@@ -546,6 +568,44 @@ async function fillPushBox(){
   box.innerHTML = `<b>This phone:</b> ${esc(st.text)} ${st.state==='off'?'<button class="btn sm primary" data-act="pushOn" style="margin-top:6px">Turn on notifications</button>':''}${st.state==='on'?'<button class="btn sm" data-act="pushTest" style="margin-top:6px">Send me a test</button>':''}<br><span class="muted">Each person turns notifications on from their own phone, under Setup or the account menu. Reminders are checked about every 15 minutes.</span>`;
 }
 
+function unusedList(M){
+  return M.items.filter(r=>!(r.req>0) && !r.counted && !r.dels.length && !r.uses.length && !r.onOrder && !S.orders.some(o=>(o.lines||[]).some(l=>l.itemId===r.it.id)));
+}
+function unusedBanner(M){
+  if(!can.manage || proj()?.closed) return '';
+  const u = unusedList(M); if(!u.length) return '';
+  return `<div class="banner info" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div style="flex:1;min-width:200px"><b>${u.length} material${u.length>1?'s have':' has'} no takeoff quantity and no activity on this job.</b> ${u.slice(0,4).map(r=>esc(r.it.name)).join(', ')}${u.length>4?'…':''}. Hide ${u.length>1?'them':'it'} to keep Count and Orders short.</div>
+    <span class="row"><button class="btn sm primary" data-act="hideUnused">Hide ${u.length}</button><button class="btn sm" data-act="pickMats">Review</button></span></div>`;
+}
+let PICK=null;
+function sheetPickMats(){
+  PICK = { on: Object.fromEntries(S.items.map(it=>[it.id, !it.inactive])) };
+  drawPickMats();
+}
+function drawPickMats(){
+  const M = model(); const unused = new Set(unusedList(M).map(r=>r.it.id));
+  const all = [...S.items].sort((a,b)=>catIdx(a.cat)-catIdx(b.cat) || num(a.sort)-num(b.sort) || String(a.name).localeCompare(b.name));
+  const cats = [...new Set(all.map(i=>i.cat||'Other'))];
+  const n = Object.values(PICK.on).filter(Boolean).length;
+  openSheet(`<div class="spread"><h2>Materials on this job</h2><button class="btn sm" data-act="closeSheet">Close</button></div>
+  <div class="small muted">Ticked materials show on Status, Count, Log and Orders. Unticked ones are hidden but keep their history, and can be turned back on any time.</div>
+  ${searchBox('np','Find a material')}
+  <div class="row"><button class="linkbtn" data-act="pickSet" data-v="used">Only materials with a takeoff or activity</button><button class="linkbtn" data-act="pickSet" data-v="all">Tick all</button></div>
+  <div class="list">${cats.map(c=>`<div class="plan-cat" data-fscat="np">${esc(c)}</div>`+all.filter(i=>(i.cat||'Other')===c).map(it=>`<label class="plan-row" data-fs="np" data-fname="${esc(it.name)}"><input type="checkbox" data-pick="${esc(it.id)}" ${PICK.on[it.id]?'checked':''}><span style="flex:1;min-width:0"><span style="font-weight:600">${esc(it.name)}</span><span class="small muted" style="display:block">${esc(itemMeta(it))}${unused.has(it.id)?' · no takeoff or activity':''}</span></span></label>`).join('')).join('')}</div>
+  <button class="btn primary" data-act="pickSave">Save · ${n} of ${all.length} in use</button>`, drawPickMats);
+  applySearch('np');
+}
+// company library: one entry per distinct material, shared by all jobs
+function libKey(it){ return it.bar && it.lengthIn ? `rebar-${String(it.bar).replace('#','')}-${it.lengthIn}` : (normQ(it.name).replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,80) || 'item'); }
+function toLibrary(it){
+  if(!can.manage) return;
+  const k = libKey(it); const ex = (S.library||[]).find(l=>l.id===k);
+  if(ex && ex.name===it.name && ex.cat===it.cat && ex.unit===it.unit) return;
+  db.doc('library/'+k).set({name:it.name, cat:it.cat||'Other', unit:it.unit||'EA', bar:it.bar||'', lengthIn:it.lengthIn||null, updatedBy:UID, updatedAt:new Date().toISOString()});
+}
+let libUnsub=null;
+function listenLibrary(){ if(libUnsub || !can.manage) return; libUnsub = onSnapshot(collection(fs,'library'), snap=>{ S.library = snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>catIdx(a.cat)-catIdx(b.cat)||String(a.name).localeCompare(b.name, undefined, {numeric:true})); }, e=>console.warn('library', e)); }
+
 function vSetup(M){
   const p=proj(), ST=M.ST, w=p?.waste||{};
   let h = sampleBanner(p);
@@ -570,12 +630,17 @@ function vSetup(M){
     <div class="small" style="text-align:right">${G.prim.length} primary<br><span class="muted">${G.secondary.length} secondary</span></div></div></button>`;
   h += `</div></section>`;
 
-  h += `<section class="group"><div class="spread"><h2 style="font-size:18px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)">Materials</h2><span class="row">${can.manage&&!p?.closed?'<button class="btn sm" data-act="tkOpen">Import takeoff</button>':''}<button class="btn sm primary" data-act="editItem" data-id="">Add material</button></span></div>
+  h += `<section class="group"><div class="spread"><h2 style="font-size:18px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)">Materials</h2><span class="row">${can.manage&&!p?.closed?'<button class="btn sm" data-act="tkOpen">Import takeoff</button><button class="btn sm" data-act="pickMats">Choose materials</button>':''}<button class="btn sm primary" data-act="editItem" data-id="">Add material</button></span></div>
+    ${unusedBanner(M)}
     <p class="small muted" style="margin:4px 2px 8px">For a job already underway, enter the takeoff quantity and an estimate of what was installed before your first count. Those two numbers plus the opening count set the baseline.</p><div class="list">`;
   if(!M.items.length) h += `<div class="empty">No materials yet.</div>`;
   for(const r of M.items) h += `<button class="item" data-act="editItem" data-id="${esc(r.it.id)}"><div class="spread"><div style="min-width:0"><div class="name">${esc(r.it.name)}</div><div class="meta">${esc(r.it.cat||'Other')} · ${esc(itemMeta(r.it))}${r.gid?` · ${r.it.role} · ratio ${ratioTxt(r.ratio)}`:''}</div></div>
     <div class="small" style="text-align:right">Takeoff <b>${fmt(r.req)}</b><br><span class="muted">Pre-installed ${fmt(r.pre)}</span></div></div></button>`;
-  h += `</div></section>`;
+  h += `</div>`;
+  const hidden = S.items.filter(it=>it.inactive);
+  if(hidden.length) h += `<details class="hiddenmats"><summary>${hidden.length} hidden material${hidden.length>1?'s':''} (not used on this job)</summary><div class="list">${hidden.map(it=>`<div class="logrow"><div><div style="font-weight:600">${esc(it.name)}</div><div class="small muted">${esc(it.cat||'Other')} · ${esc(itemMeta(it))}</div></div>${can.manage&&!p?.closed?`<button class="btn sm" data-act="showMat" data-id="${esc(it.id)}">Use on this job</button>`:''}</div>`).join('')}</div></details>`;
+  if(can.manage && !p?.closed && M.items.length) h += `<div class="row"><button class="linkbtn" data-act="libAddAll">Save this job's materials to the company library</button></div>`;
+  h += `</section>`;
   if(p){
     const openOrd = M.orders.filter(o=>o.status==='Open'||o.status==='Partial').length;
     h += p.closed
@@ -619,6 +684,7 @@ function render(){
   main.classList.toggle('wide', S.tab==='orders');
   main.innerHTML = ({status:vStatus,log:vLog,count:vCount,orders:vOrders,reports:vReports,setup:vSetup})[S.tab](M);
   if(S.tab==='setup') fillPushBox();
+  if(S.tab==='count') applySearch('count'); if(S.tab==='orders') applySearch('orders');
 }
 document.addEventListener('focusout', ()=>{ setTimeout(()=>{ if(S.pendingRender) render(); }, 0); });
 
@@ -687,6 +753,7 @@ function sheetEditItem(id){
   <div class="grid2"><label class="f">Takeoff quantity<input id="iReq" type="number" inputmode="numeric" min="0" value="${esc(it.required??'')}"></label>
   <label class="f">Installed before tracking<input id="iPre" type="number" inputmode="numeric" min="0" value="${esc(it.preInstalled??'')}" placeholder="0 if new job"></label></div>
   <div class="small muted">${g?`In production group “${esc(g.name)}” as ${esc(it.role)}. Change that in Setup › Production groups.`:'Not in a production group. Assign it in Setup › Production groups.'}</div>
+  ${id?`<label class="check"><input type="checkbox" id="iActive" ${it.inactive?'':'checked'}> Used on this job (untick to hide it from Count, Log and Orders)</label>`:''}
   <div class="row"><button class="btn primary" data-act="saveItem" data-id="${esc(id||'')}">Save material</button>${id?confirmBtn('delItem', id, 'Remove material'):''}</div>`, ()=>sheetEditItem(id));
 }
 
@@ -833,13 +900,58 @@ async function tkLoad(file){
   drawTakeoff();
 }
 
+// New job: start blank, from a Trowel True takeoff, from the company library, or from selected materials of a past job.
+let NP=null;
 function sheetNewProject(){
+  NP = { src: S.library?.length ? 'library' : 'takeoff', job: S.pid || '', items: [], groups: [], on: {}, num:'', name:'', phase:'Start', copyGroups:true, loading:false };
+  S.q = {...(S.q||{}), np:''};
+  npLoad(); drawNewProject();
+}
+async function npLoad(){
+  NP.on = {};
+  if(NP.src==='library'){ NP.items = (S.library||[]).map(l=>({...l})); NP.groups=[]; }
+  else if(NP.src==='job' && NP.job){
+    if(NP.job===S.pid){ NP.items = S.items.map(i=>({...i})); NP.groups = S.groups.map(g=>({...g})); }
+    else { NP.loading=true; drawNewProject();
+      try{ const [is, gs] = await Promise.all([getDocs(collection(fs,`projects/${NP.job}/items`)), getDocs(collection(fs,`projects/${NP.job}/groups`))]);
+        NP.items = is.docs.map(d=>({id:d.id, ...d.data()})).filter(i=>!i.void); NP.groups = gs.docs.map(d=>({id:d.id, ...d.data()})).filter(g=>!g.void); }
+      catch(e){ console.error(e); NP.items=[]; toast('Could not load that job. Check your connection.'); }
+      NP.loading=false; }
+  } else { NP.items=[]; NP.groups=[]; }
+  // pre-tick: everything from the library is off; from a past job, what that job actually used
+  for(const it of NP.items) NP.on[it.id] = NP.src==='job' ? !it.inactive && (num(it.required)>0) : false;
+  if(NP.src==='job' && !NP.items.some(it=>NP.on[it.id])) for(const it of NP.items) NP.on[it.id] = !it.inactive;
+  drawNewProject();
+}
+function npSync(){ const g=x=>document.getElementById(x); if(!g('npNum')) return; NP.num=g('npNum').value; NP.name=g('npName').value; NP.phase=g('npPhase').value; if(g('npGroups')) NP.copyGroups=g('npGroups').checked; }
+function drawNewProject(){
+  const srcs = [['takeoff','Trowel True takeoff'],['library','Company library'],['job','Past job'],['blank','Blank']];
+  const items = [...NP.items].sort((a,b)=>catIdx(a.cat)-catIdx(b.cat) || String(a.name).localeCompare(b.name, undefined, {numeric:true}));
+  const cats = [...new Set(items.map(i=>i.cat||'Other'))];
+  const n = items.filter(i=>NP.on[i.id]).length;
+  let list = '';
+  if(NP.src==='library' || NP.src==='job'){
+    if(NP.loading) list = '<div class="empty">Loading materials…</div>';
+    else if(!items.length) list = `<div class="empty">${NP.src==='library'?'The company library is empty. It fills up as materials are added to jobs, or use “Save this job\'s materials to the company library” in Setup.':'That job has no materials.'}</div>`;
+    else list = `${searchBox('np','Find a material')}
+      <div class="row"><button class="linkbtn" data-act="npAll" data-v="1">Tick all</button><button class="linkbtn" data-act="npAll" data-v="0">Clear</button></div>
+      <div class="list" style="max-height:46vh;overflow:auto">${cats.map(c=>`<div class="plan-cat" data-fscat="np">${esc(c)}</div>`+items.filter(i=>(i.cat||'Other')===c).map(it=>`<label class="plan-row" data-fs="np" data-fname="${esc(it.name)}"><input type="checkbox" data-npon="${esc(it.id)}" ${NP.on[it.id]?'checked':''}><span style="flex:1;min-width:0"><span style="font-weight:600">${esc(it.name)}</span><span class="small muted" style="display:block">${esc(itemMeta(it))}${NP.src==='job'&&num(it.required)>0?` · takeoff there ${fmt(num(it.required))}`:''}</span></span></label>`).join('')).join('')}</div>`;
+  }
+  const jobs = (S.allProjects||S.projects).slice().sort((a,b)=>String(b.number).localeCompare(String(a.number)));
   openSheet(`<div class="spread"><h2>New project</h2><button class="btn sm" data-act="closeSheet">Close</button></div>
-  <div class="grid2"><label class="f">Project number<input id="npNum" placeholder="126-002"></label>
-  <label class="f">Phase<select id="npPhase"><option>Start</option><option>Middle</option><option>End</option></select></label></div>
-  <label class="f">Project name<input id="npName"></label>
-  <label class="check"><input type="checkbox" id="npCopy" ${S.items.length?'checked':''}> Copy materials, production groups and waste settings from the current project (quantities blank)</label>
-  <button class="btn primary" data-act="createProject">Create project</button>`);
+  <div class="grid2"><label class="f">Project number<input id="npNum" placeholder="126-002" value="${esc(NP.num)}"></label>
+  <label class="f">Phase<select id="npPhase">${['Start','Middle','End'].map(x=>`<option ${NP.phase===x?'selected':''}>${x}</option>`).join('')}</select></label></div>
+  <label class="f">Project name<input id="npName" value="${esc(NP.name)}"></label>
+  <div class="eyebrow">Start the material list from</div>
+  <div class="seg wrap2" role="group" aria-label="Material list source">${srcs.map(([k,l])=>`<button data-act="npSrc" data-v="${k}" aria-pressed="${NP.src===k}">${l}</button>`).join('')}</div>
+  ${NP.src==='takeoff'?'<div class="formula">After the job is created, the takeoff import opens. Pick the Trowel True file and only the lines with quantities come in, so there\'s nothing to clean up.</div>':''}
+  ${NP.src==='blank'?'<div class="formula">The job starts with no materials. Add them in Setup, or while entering orders and deliveries.</div>':''}
+  ${NP.src==='job'?`<label class="f">Copy from<select id="npJob">${jobs.map(p=>`<option value="${esc(p.id)}" ${NP.job===p.id?'selected':''}>${esc(p.number)} ${esc(p.name||'')}</option>`).join('')}</select></label>
+    <label class="check"><input type="checkbox" id="npGroups" ${NP.copyGroups?'checked':''}> Also copy its production groups and waste settings</label>`:''}
+  ${list}
+  <button class="btn primary" data-act="createProject">${(NP.src==='library'||NP.src==='job')?`Create project with ${n} material${n===1?'':'s'}`:'Create project'}</button>
+  <div class="small muted">Quantities start blank. You can add or hide materials later in Setup.</div>`, drawNewProject);
+  applySearch('np');
 }
 
 /* ---------- actions ---------- */
@@ -887,8 +999,11 @@ async function act(a, el){
       if(lenRaw && lengthIn==null){ g('iLen').focus(); toast(`Enter length like 6'-8" or 20'.`); return; }
       const body={cat:g('iCat').value, unit:g('iUnit').value, name, bar:g('iBar').value, lengthIn:lengthIn||null,
         required: g('iReq').value===''?null:num(g('iReq').value), preInstalled: g('iPre').value===''?null:num(g('iPre').value)};
+      if(id && g('iActive')) body.inactive = !g('iActive').checked;
+      if(!id){ const dup=S.items.find(i=>normQ(i.name)===normQ(name) || (body.bar && i.bar===body.bar && Number(i.lengthIn)===Number(body.lengthIn)));
+        if(dup){ toast(dup.inactive?`“${dup.name}” is already on this job but hidden. Turn it on under Hidden materials.`:`“${dup.name}” is already on this job.`); return; } }
       try{ if(id){ await col('items').doc(id).update(body); }
-        else { body.sort = S.items.reduce((m,i)=>Math.max(m,num(i.sort)),0)+1; await col('items').doc(slug(name)).set(body,{create:true}); }
+        else { body.sort = S.items.reduce((m,i)=>Math.max(m,num(i.sort)),0)+1; await col('items').doc(slug(name)).set(body,{create:true}); toLibrary(body); }
         closeSheet(); toast('Material saved'); }catch(e){ fail(e); } break; }
     case 'delItem': try{ await col('items').doc(id).update({void:voidStamp()}); closeSheet(); toast('Material removed'); }catch(e){ fail(e); } break;
     case 'saveGroup': {
@@ -937,7 +1052,7 @@ async function act(a, el){
       const nid=slug(name);
       const body={cat:g('nmCat').value, unit:g('nmUnit').value, name, bar:g('nmBar').value, lengthIn:lengthIn||null, required:null, preInstalled:null, sort:S.items.reduce((m,i)=>Math.max(m,num(i.sort)),0)+1};
       const keep = ctx==='recv' ? captureRecv() : null; if(ctx==='order') syncOrderDraft();
-      col('items').doc(nid).set(body,{create:true});
+      col('items').doc(nid).set(body,{create:true}); toLibrary(body);
       if(!S.items.some(i=>i.id===nid)) S.items=[...S.items,{id:nid,...body}];
       S.newMat=null; toast(`Added ${name}`);
       if(ctx==='order'){ const blank=orderDraft.lines.find(l=>!l.itemId); if(blank) blank.itemId=nid; else orderDraft.lines.push({itemId:nid, qty:''}); drawOrder(); }
@@ -972,6 +1087,12 @@ async function act(a, el){
       catch(e){ console.error(e); toast(e.message||'Could not turn on notifications.'); }
       fillPushBox(); break; }
     case 'pushTest': toast('Test requested. It arrives within about 15 minutes.'); db.doc('projects/'+S.pid).update({pushTestFor:UID, pushTestAt:new Date().toISOString()}); break;
+    case 'hideUnused': { const u=unusedList(model()); for(const r of u) col('items').doc(r.it.id).update({inactive:true}); toast(`Hid ${u.length} material${u.length>1?'s':''}. Find them under Hidden materials.`); break; }
+    case 'showMat': col('items').doc(id).update({inactive:false}); toast('Material is back on this job'); break;
+    case 'pickMats': sheetPickMats(); break;
+    case 'pickSet': { const M=model(); const un=new Set(unusedList(M).map(r=>r.it.id)); for(const it of S.items){ PICK.on[it.id] = el.dataset.v==='all' ? true : (it.inactive ? !!(has(it.required)&&num(it.required)>0) : !un.has(it.id)); } drawPickMats(); break; }
+    case 'pickSave': { let n=0; for(const it of S.items){ const want=!PICK.on[it.id]; if(!!it.inactive!==want){ col('items').doc(it.id).update({inactive:want}); n++; } } closeSheet(); toast(n?`Updated ${n} material${n>1?'s':''}`:'No changes'); break; }
+    case 'libAddAll': { for(const it of S.items.filter(i=>!i.inactive)) toLibrary(it); toast('Saved to the company library'); break; }
     case 'closeProject': try{ await db.doc('projects/'+S.pid).update({closed:true, closedOn:today()}); S.confirm=null; toast('Job closed out'); }catch(e){ fail(e); } break;
     case 'reopenProject': try{ await db.doc('projects/'+S.pid).update({closed:false, closedOn:null}); toast('Job reopened'); }catch(e){ fail(e); } break;
     case 'newProject': sheetNewProject(); break;
@@ -984,20 +1105,36 @@ async function act(a, el){
         if(m==='new'){ add.set(r.key,{r,q}); } else { const u=upd.get(m)||{q:0, keys:[]}; u.q+=q; u.keys.push(r.key); upd.set(m,u); } }
       try{ let sort=S.items.reduce((mx,i)=>Math.max(mx,num(i.sort)),0);
         for(const [id,u] of upd) await col('items').doc(id).update({required:Math.round(u.q*100)/100, ttKey:u.keys[0]});
-        for(const {r,q} of add.values()) await col('items').doc(slug(r.name)).set({cat:r.cat, unit:r.unit, name:r.name, bar:r.bar||'', lengthIn:r.lengthIn||null, required:q, preInstalled:null, sort:++sort, ttKey:r.key},{create:true});
+        for(const {r,q} of add.values()){ await col('items').doc(slug(r.name)).set({cat:r.cat, unit:r.unit, name:r.name, bar:r.bar||'', lengthIn:r.lengthIn||null, required:q, preInstalled:null, sort:++sort, ttKey:r.key},{create:true}); toLibrary(r); }
         closeSheet(); TK=null; toast(`Takeoff imported: ${upd.size} updated, ${add.size} added`);
       }catch(e){ el.disabled=false; fail(e); } break; }
+    case 'npSrc': npSync(); NP.src=el.dataset.v; S.q.np=''; npLoad(); break;
+    case 'npAll': { npSync(); const q=(S.q.np||'').trim(); for(const it of NP.items) if(!q || matchQ(it.name,q)) NP.on[it.id]=el.dataset.v==='1'; drawNewProject(); break; }
     case 'createProject': {
-      const g=x=>document.getElementById(x); const number=g('npNum').value.trim(), name=g('npName').value.trim();
-      if(!number){ g('npNum').focus(); toast('Enter a project number.'); return; }
+      npSync(); const number=NP.num.trim(), name=NP.name.trim();
+      if(!number){ document.getElementById('npNum').focus(); toast('Enter a project number.'); return; }
       const pid = number.replace(/[^A-Za-z0-9_.~:@+-]/g,'-');
-      if(S.projects.some(p=>p.id===pid)){ toast('That project number already exists.'); return; }
-      const cur = proj()||{}, copy = g('npCopy').checked;
-      try{ await db.doc('projects/'+pid).set({number, name, phase:g('npPhase').value, sample:false, created:today(),
-          wasteOn: copy ? !!cur.wasteOn : true, basis: copy ? (cur.basis||'net') : 'net', waste: copy ? (cur.waste||{}) : {CMU:3, Rebar:2}, threshold: copy ? (cur.threshold??5) : 5},{create:true});
-        if(copy){ for(const gr of S.groups){ const {id:gid, ...rest}=gr; await db.doc(`projects/${pid}/groups/${gid}`).set(clean(rest),{create:true}); }
-          for(const it of S.items){ const {id:_x, ...rest}=it; await db.doc(`projects/${pid}/items/${it.id}`).set({...clean(rest), required:null, preInstalled:null, ratio:null},{create:true}); } }
-        closeSheet(); switchProject(pid); S.tab='setup'; render(); toast('Project created'); }catch(e){ fail(e); } break; }
+      if((S.allProjects||S.projects).some(p=>p.id===pid)){ toast('That project number already exists.'); return; }
+      const picked = NP.items.filter(i=>NP.on[i.id]);
+      if((NP.src==='library'||NP.src==='job') && !picked.length){ toast('Tick at least one material, or choose Blank.'); return; }
+      const fromJob = NP.src==='job' && NP.copyGroups;
+      const srcP = fromJob ? ((S.allProjects||S.projects).find(p=>p.id===NP.job)||{}) : (proj()||{});
+      el.disabled=true;
+      try{ await db.doc('projects/'+pid).set({number, name, phase:NP.phase, sample:false, created:today(),
+          wasteOn: srcP.wasteOn ?? true, basis: srcP.basis||'net', waste: srcP.waste||{CMU:3, Rebar:2}, threshold: srcP.threshold??5},{create:true});
+        const keepGroups = fromJob ? NP.groups.filter(g=>picked.some(i=>i.group===g.id)) : [];
+        for(const gr of keepGroups){ const {id:gid, ...rest}=gr; await db.doc(`projects/${pid}/groups/${gid}`).set({...clean(rest), lowStock:null},{create:true}); }
+        let sort=0;
+        for(const it of picked){
+          const base = {name:it.name, cat:it.cat||'Other', unit:it.unit||'EA', bar:it.bar||'', lengthIn:it.lengthIn||null, required:null, preInstalled:null, sort:++sort};
+          if(fromJob && keepGroups.some(g=>g.id===it.group)) Object.assign(base, {group:it.group, role:it.role||null, estimate:it.estimate!==false, ratio:null});
+          if(it.ttKey) base.ttKey = it.ttKey;
+          await db.doc(`projects/${pid}/items/${NP.src==='library'?it.id:it.id}`).set(base,{create:true});
+        }
+        const openTk = NP.src==='takeoff';
+        closeSheet(); NP=null; switchProject(pid); S.tab='setup'; render(); toast('Project created');
+        if(openTk){ TK=null; setTimeout(()=>sheetTakeoff(), 300); }
+      }catch(e){ el.disabled=false; fail(e); } break; }
     case 'clearSample': {
       el.disabled=true;
       try{ for(const n of ['counts','deliveries','orders','production','usage']) for(const d of [...S[n]]) await col(n).doc(d.id).delete();
@@ -1018,6 +1155,7 @@ document.addEventListener('click', e=>{
 });
 document.addEventListener('input', e=>{
   const t=e.target;
+  if(t.dataset.qscope){ (S.q||(S.q={}))[t.dataset.qscope]=t.value; applySearch(t.dataset.qscope); return; }
   if(t.dataset.qty){ S.draft.qty[t.dataset.qty]=t.value; const r=model().items.find(x=>x.it.id===t.dataset.qty); const c=document.querySelector(`[data-conv="${CSS.escape(t.dataset.qty)}"]`); if(c&&r) c.textContent=conv(r,t.value);
     const n=Object.values(S.draft.qty).filter(has).length; const b=document.querySelector('[data-act="saveCount"]'); if(b){ b.disabled=!n; b.textContent=`Save count${n?` · ${n} item${n>1?'s':''}`:''}`; } }
   if(t.id==='cDate') S.draft.date=t.value; if(t.id==='cBy') S.draft.by=t.value; if(t.id==='cNote') S.draft.note=t.value;
@@ -1026,6 +1164,9 @@ document.addEventListener('input', e=>{
 });
 document.addEventListener('change', e=>{
   const t=e.target;
+  if(t.dataset && t.dataset.npon && NP){ NP.on[t.dataset.npon]=t.checked; const b=document.querySelector('[data-act="createProject"]'); if(b){ const n=NP.items.filter(i=>NP.on[i.id]).length; b.textContent=`Create project with ${n} material${n===1?'':'s'}`; } return; }
+  if(t.id==='npJob' && NP){ npSync(); NP.job=t.value; npLoad(); return; }
+  if(t.dataset && t.dataset.pick && PICK){ PICK.on[t.dataset.pick]=t.checked; const b=document.querySelector('[data-act="pickSave"]'); if(b){ const n=Object.values(PICK.on).filter(Boolean).length; b.textContent=`Save · ${n} of ${S.items.length} in use`; } return; }
   if(t.dataset && t.dataset.plansel){ const s2=S.planSel||(S.planSel=new Set()); t.checked?s2.add(t.dataset.plansel):s2.delete(t.dataset.plansel); t.blur(); render(); return; }
   if(t.id==='tkFile' && t.files && t.files[0]){ tkLoad(t.files[0]); return; }
   if(t.dataset && (t.dataset.tkon!==undefined || t.dataset.tkmatch!==undefined)){ tkSync(); if(t.dataset.tkon!==undefined) drawTakeoff(); return; }
@@ -1119,11 +1260,12 @@ export function startApp(me, uid, hooks){
   }
   if(first){ const h=(location.hash||'').slice(1); if(['count','log','status','orders','reports'].includes(h)) S.tab=h; resumePush(uid, n=>toast(n.title||'Reminder')); }
   if(first || prevRole!==me.role || prevProj!==JSON.stringify(me.projects||[])) listenProjects();
+  listenLibrary();
   if(!tabsFor().includes(S.tab)) S.tab='status';
   render();
 }
 export function stopApp(){
-  projUnsubs.forEach(u=>u()); projUnsubs=[]; unsubs.forEach(u=>u()); unsubs=[]; syncOff&&syncOff(); syncOff=null;
+  projUnsubs.forEach(u=>u()); projUnsubs=[]; unsubs.forEach(u=>u()); unsubs=[]; syncOff&&syncOff(); syncOff=null; libUnsub&&libUnsub(); libUnsub=null;
   ME=null; UID=null; S.pid=null; S.projects=[]; S.loaded=false;
 }
 export const appState = { get S(){ return S; }, get ME(){ return ME; }, get UID(){ return UID; }, model, render, toast, switchProject, saveFile, fmt, fDate, esc, today };

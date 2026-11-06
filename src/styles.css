@@ -176,8 +176,8 @@ body.signed-out .sync,body.signed-out .acct,body.signed-out nav.tabs{display:non
 
 nav.tabs.many button{font-size:11px;letter-spacing:.02em}
 nav.tabs.many button svg{width:20px;height:20px}
-.seg.wrap3{grid-auto-flow:row;grid-template-columns:repeat(6,minmax(0,1fr))}
-@media (max-width:520px){.seg.wrap3{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.seg.wrap3{grid-auto-flow:row;grid-template-columns:repeat(7,minmax(0,1fr))}
+@media (max-width:620px){.seg.wrap3{grid-template-columns:repeat(4,minmax(0,1fr))}}
 
 .stock{background:var(--sunk);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
 .stock .v{font-family:var(--f-display);font-weight:700;font-size:30px;line-height:1.05}
@@ -227,3 +227,12 @@ table.plan td.ck+td,table.plan th.ck+th{text-align:left}
 .countrow.tk label.check{gap:10px}
 .countrow.tk select{font-size:14px;font-weight:500;min-height:40px}
 .countrow.tk select:disabled{opacity:.5}
+.searchbox{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:0 12px;color:var(--muted)}
+.searchbox:focus-within{border-color:var(--accent)}
+.searchbox input{flex:1;border:0;background:transparent;font-size:16px;min-height:46px;color:var(--ink);outline:none;min-width:0}
+.sheet .searchbox{background:var(--sunk)}
+.seg.wrap2{grid-auto-flow:row;grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:520px){.seg.wrap2{grid-template-columns:repeat(2,minmax(0,1fr))}}
+details.hiddenmats{margin-top:8px}
+details.hiddenmats summary{cursor:pointer;color:var(--muted);font-weight:600;padding:8px 2px;min-height:40px}
+details.hiddenmats .list{margin-top:6px}

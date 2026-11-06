@@ -62,6 +62,13 @@ service cloud.firestore {
       allow list: if isAdmin();
     }
 
+    // Company material library shared by every job: anyone signed in reads it, foremen and admins add to it.
+    match /library/{id} {
+      allow read: if isActive();
+      allow create, update: if isManager();
+      allow delete: if isAdmin();
+    }
+
     match /audit/{id} {
       allow create: if isActive() && request.resource.data.uid == request.auth.uid;
       allow read, delete: if isAdmin();

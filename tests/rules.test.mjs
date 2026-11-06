@@ -126,3 +126,12 @@ test('only managers change the count schedule', async () => {
   await assertFails(updateDoc(doc(as('ctr', 'ctr@x.com'), 'projects/P1'), { countSchedule: { enabled: true } }));
   await assertSucceeds(updateDoc(doc(as('pm', 'pm@x.com'), 'projects/P1'), { countSchedule: { enabled: true } }));
 });
+
+test('company library: everyone reads, managers write, admins delete', async () => {
+  await assertSucceeds(setDoc(doc(as('pm', 'pm@x.com'), 'library/cmu-12'), { name: '12" CMU', cat: 'CMU' }));
+  await assertSucceeds(getDocs(collection(as('ctr', 'ctr@x.com'), 'library')));
+  await assertFails(setDoc(doc(as('ctr', 'ctr@x.com'), 'library/x'), { name: 'x' }));
+  await assertFails(deleteDoc(doc(as('pm', 'pm@x.com'), 'library/cmu-12')));
+  await assertSucceeds(deleteDoc(doc(as('admin', OWNER), 'library/cmu-12')));
+  await assertFails(getDocs(collection(as('off', 'off@x.com'), 'library')));
+});

@@ -46,9 +46,9 @@ const jobChecks = (app, sel, prefix) => (app.S.allProjects || []).length
 export function vAdmin(app) {
   APP = app; start(app);
   const S = app.S;
-  const secs = [['users', 'People'], ['invites', 'Invites'], ['jobs', 'Jobs'], ['cleanup', 'Cleanup'], ['audit', 'Audit'], ['import', 'Import']];
+  const secs = [['users', 'People'], ['invites', 'Invites'], ['jobs', 'Jobs'], ['cleanup', 'Cleanup'], ['library', 'Library'], ['audit', 'Audit'], ['import', 'Import']];
   let h = `<div class="seg wrap3" role="group" aria-label="Admin section">${secs.map(([k, l]) => `<button data-act="admSec" data-sec="${k}" aria-pressed="${A.sec === k}">${l}</button>`).join('')}</div>`;
-  h += ({ users: secUsers, invites: secInvites, jobs: secJobs, cleanup: secCleanup, audit: secAudit, import: secImport })[A.sec](app);
+  h += ({ users: secUsers, invites: secInvites, jobs: secJobs, cleanup: secCleanup, library: secLibrary, audit: secAudit, import: secImport })[A.sec](app);
   return h;
 }
 
@@ -166,6 +166,15 @@ function secCleanup(app) {
   return h;
 }
 
+/* ---------- company library ---------- */
+function secLibrary(app) {
+  const lib = app.S.library || [];
+  let h = `<p class="small muted" style="margin:0 2px">The company library is the pick list for new jobs. It grows as materials are added to jobs. Delete duplicates or materials you no longer use; jobs that already have them are not affected.</p><div class="list">`;
+  if (!lib.length) h += `<div class="empty">The library is empty.</div>`;
+  for (const l of lib) h += `<div class="logrow"><div><div style="font-weight:600">${esc(l.name)}</div><div class="small muted">${esc(l.cat || 'Other')} · ${esc(l.unit || 'EA')}</div></div>${confirmBtn('admDelLib', l.id, 'Delete')}</div>`;
+  return h + `</div>`;
+}
+
 /* ---------- audit ---------- */
 function secAudit(app) {
   if (A.audit === null) { loadAudit(); return `<div class="panel empty">Loading the audit log…</div>`; }
@@ -244,6 +253,7 @@ export async function adminAct(a, el, app) {
       setDoc(doc(collection(fs, 'audit')), { at: serverTimestamp(), uid: app.UID, email: app.ME.email, action: 'invite', path: 'invites/' + email, pid: null, detail: JSON.stringify({ role: data.role, projects }) }).catch(() => {});
       app.toast('Invitation created'); rerender(); break;
     }
+    case 'admDelLib': deleteDoc(doc(fs, 'library/' + id)).catch(e => console.error(e)); A.confirm = null; app.toast('Removed from the library'); rerender(); break;
     case 'admDelInvite': deleteDoc(doc(fs, 'invites/' + id)).catch(e => console.error(e)); A.confirm = null; app.toast('Invitation removed'); rerender(); break;
     case 'admArchive': updateDoc(doc(fs, 'projects/' + id), { archived: el.dataset.val === '1' }).catch(e => console.error(e)); app.toast(el.dataset.val === '1' ? 'Job archived' : 'Job restored'); break;
     case 'admDelJob': {
